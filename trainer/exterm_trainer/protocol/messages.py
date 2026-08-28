@@ -1,0 +1,76 @@
+﻿import uuid
+from enum import Enum
+from typing import Any, Dict, Literal, Optional
+from pydantic import BaseModel, Field
+
+
+class RunState(str, Enum):
+    IDLE = "idle"
+    STARTING = "starting"
+    TRAINING = "training"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    STOPPED = "stopped"
+    FAILED = "failed"
+
+
+class RunConfig(BaseModel):
+    run_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8], description="Unique ID for this run")
+    env_id: str = Field(default="CartPole-v1", description="Gymnasium environment ID")
+    algorithm: str = Field(default="PPO", description="RL algorithm (PPO, DQN, SAC, etc.)")
+    total_timesteps: int = Field(default=50_000, description="Total training timesteps budget")
+    seed: Optional[int] = Field(default=None, description="Random seed")
+    hyperparameters: Dict[str, Any] = Field(default_factory=dict, description="Algorithm hyperparameters")
+
+
+class TelemetryEvent(BaseModel):
+    type: Literal["telemetry"] = "telemetry"
+    run_id: Optional[str] = None
+    timestamp: float
+    timesteps: int
+    total_timesteps: int
+    progress: float
+    episode_count: int
+    episode_reward: Optional[float] = None
+    episode_length: Optional[int] = None
+    mean_reward_100: Optional[float] = None
+    fps: int = 0
+    metrics: Dict[str, float] = Field(default_factory=dict)
+
+
+class StatusResponse(BaseModel):
+    run_id: Optional[str] = None
+    state: RunState
+    current_run: Optional[RunConfig] = None
+    timesteps: int = 0
+    total_timesteps: int = 0
+    episodes: int = 0
+    mean_reward_100: Optional[float] = None
+    fps: int = 0
+    error: Optional[str] = None
+
+
+class StatusMessage(BaseModel):
+    type: Literal["status"] = "status"
+    run_id: Optional[str] = None
+    state: RunState
+    timesteps: int = 0
+    total_timesteps: int = 0
+    episodes: int = 0
+    mean_reward_100: Optional[float] = None
+    fps: int = 0
+    error: Optional[str] = None
+    current_run: Optional[RunConfig] = None
+
+
+class LogMessage(BaseModel):
+    type: Literal["log"] = "log"
+    run_id: Optional[str] = None
+    level: str = "info"
+    message: str
+    timestamp: float
+
+
+class CommandMessage(BaseModel):
+    action: Literal["pause", "resume", "stop", "steer"]
+    payload: Optional[Dict[str, Any]] = None

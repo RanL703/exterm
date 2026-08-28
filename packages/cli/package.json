@@ -1,0 +1,29 @@
+﻿{
+  "name": "exterm",
+  "version": "0.1.0",
+  "description": "Terminal-native CLI to scaffold, train, and steer reinforcement learning agents",
+  "type": "module",
+  "bin": {
+    "exterm": "./bin/exterm.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "commander": "^12.0.0",
+    "picocolors": "^1.0.0",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "@types/ws": "^8.5.10",
+    "tsup": "^8.0.2",
+    "tsx": "^4.7.2",
+    "typescript": "^5.4.5"
+  }
+}

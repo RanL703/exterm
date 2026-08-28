@@ -1,0 +1,16 @@
+{
+  "name": "exterm-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "cli": "npm run start --workspace=@exterm/cli",
+    "dev:trainer": "uv run --directory trainer python -m exterm_trainer"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}
