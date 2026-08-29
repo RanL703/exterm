@@ -1,6 +1,6 @@
 ﻿import uuid
 from enum import Enum
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -74,3 +74,42 @@ class LogMessage(BaseModel):
 class CommandMessage(BaseModel):
     action: Literal["pause", "resume", "stop", "steer"]
     payload: Optional[Dict[str, Any]] = None
+
+
+class CheckpointInfo(BaseModel):
+    checkpoint_id: str
+    run_id: str
+    timesteps: int
+    episode_count: int
+    mean_reward_100: Optional[float]
+    created_at: float
+    reward_code: str
+    hyperparameters: Dict[str, Any]
+    algorithm: str
+    env_id: str
+
+
+class CheckpointListResponse(BaseModel):
+    checkpoints: List[CheckpointInfo]
+
+
+class SteerRequest(BaseModel):
+    instruction: str
+    checkpoint_id: Optional[str] = None
+
+
+class SteerResponse(BaseModel):
+    diff: str
+    applied: bool
+    requires_confirmation: bool
+    checkpoint_id: str
+    message: str
+
+
+class RollbackRequest(BaseModel):
+    checkpoint_id: str
+
+
+class RollbackResponse(BaseModel):
+    success: bool
+    message: str

@@ -13,12 +13,17 @@ export class TrainerWebSocketClient {
   private statusHandlers: Set<StatusHandler> = new Set();
   private isExplicitlyClosed = false;
 
-  constructor(httpBaseUrl: string) {
+  constructor(httpBaseUrl: string, private token?: string) {
     const wsUrl = httpBaseUrl
       .replace(/^http:\/\//i, "ws://")
       .replace(/^https:\/\//i, "wss://")
       .replace(/\/+$/, "");
-    this.url = `${wsUrl}/ws`;
+    // Add token as query parameter if provided
+    if (token) {
+      this.url = `${wsUrl}/ws?token=${encodeURIComponent(token)}`;
+    } else {
+      this.url = `${wsUrl}/ws`;
+    }
   }
 
   async connect(): Promise<void> {

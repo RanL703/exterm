@@ -12,6 +12,7 @@ export interface TrainOptions {
   host?: string;
   noSpawn?: boolean;
   seed?: string;
+  token?: string;
 }
 
 export async function trainCommand(options: TrainOptions): Promise<void> {
@@ -21,6 +22,7 @@ export async function trainCommand(options: TrainOptions): Promise<void> {
   const hostUrl = options.host || "http://127.0.0.1:8765";
   const autoSpawn = !options.noSpawn;
   const seed = options.seed ? parseInt(options.seed, 10) : undefined;
+  const token = options.token;
   const runId = Math.random().toString(36).substring(2, 10);
 
   const config: RunConfig = {
@@ -43,8 +45,8 @@ export async function trainCommand(options: TrainOptions): Promise<void> {
     });
     spawnerCleanup = spawnRes.cleanup;
 
-    const apiClient = new TrainerApiClient(hostUrl);
-    const wsClient = new TrainerWebSocketClient(hostUrl);
+    const apiClient = new TrainerApiClient(hostUrl, token);
+    const wsClient = new TrainerWebSocketClient(hostUrl, token);
 
     await wsClient.connect();
 

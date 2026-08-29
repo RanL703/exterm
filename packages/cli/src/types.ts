@@ -61,3 +61,42 @@ export interface CommandMessage {
 }
 
 export type ServerMessage = TelemetryEvent | StatusMessage | LogMessage;
+
+export interface CheckpointInfo {
+  checkpoint_id: string;
+  run_id: string;
+  timesteps: number;
+  episode_count: number;
+  mean_reward_100: number | null;
+  created_at: number;
+  reward_code: string;
+  hyperparameters: Record<string, any>;
+  algorithm: string;
+  env_id: string;
+}
+
+export interface CheckpointListResponse {
+  checkpoints: CheckpointInfo[];
+}
+
+export interface SteerRequest {
+  instruction: string;
+  checkpoint_id?: string;
+}
+
+export interface SteerResponse {
+  diff: string;
+  applied: boolean;
+  requires_confirmation: boolean;
+  checkpoint_id: string;
+  message: string;
+}
+
+export interface RollbackRequest {
+  checkpoint_id: string;
+}
+
+export interface RollbackResponse {
+  success: boolean;
+  message: string;
+}

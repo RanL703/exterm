@@ -2,6 +2,9 @@
 import { trainCommand } from "./commands/train.js";
 import { serveCommand } from "./commands/serve.js";
 import { initCommand } from "./commands/init.js";
+import { steerCommand } from "./commands/steer.js";
+import { rollbackCommand } from "./commands/rollback.js";
+import { dashboardCommand } from "./commands/dashboard.js";
 
 const program = new Command();
 
@@ -26,6 +29,7 @@ program
   .option("-H, --host <url>", "Trainer server HTTP URL", "http://127.0.0.1:8765")
   .option("--no-spawn", "Do not auto-spawn local trainer if not running")
   .option("--seed <seed>", "Random seed for reproducibility")
+  .option("-t, --token <token>", "Bearer token for authentication (remote mode)")
   .action(trainCommand);
 
 program
@@ -34,5 +38,33 @@ program
   .option("-h, --host <host>", "Host address to bind", "127.0.0.1")
   .option("-p, --port <port>", "Port to bind", "8765")
   .action(serveCommand);
+
+program
+  .command("steer")
+  .description("Steer a running training session with natural language")
+  .argument("[instruction]", "Natural language steering instruction")
+  .option("-H, --host <url>", "Trainer server HTTP URL", "http://127.0.0.1:8765")
+  .option("-c, --confirm", "Confirm a pending steering change")
+  .option("--checkpoint <id>", "Checkpoint ID for confirmation")
+  .option("-t, --token <token>", "Bearer token for authentication (remote mode)")
+  .action(steerCommand);
+
+program
+  .command("rollback")
+  .description("Rollback to a previous checkpoint (code + weights)")
+  .option("-H, --host <url>", "Trainer server HTTP URL", "http://127.0.0.1:8765")
+  .option("-c, --checkpoint <id>", "Checkpoint ID to rollback to")
+  .option("-l, --list", "List available checkpoints")
+  .option("-t, --token <token>", "Bearer token for authentication (remote mode)")
+  .action(rollbackCommand);
+
+program
+  .command("dashboard")
+  .description("Launch the web dashboard to visualize training")
+  .option("-H, --host <url>", "Trainer server HTTP URL", "http://127.0.0.1:8765")
+  .option("-p, --port <port>", "Dashboard port", "3000")
+  .option("--no-open", "Do not open browser automatically")
+  .option("-t, --token <token>", "Bearer token for authentication (remote mode)")
+  .action(dashboardCommand);
 
 program.parse(process.argv);

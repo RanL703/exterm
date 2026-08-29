@@ -1,7 +1,10 @@
 ﻿import asyncio
+import json
 import logging
+import os
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
 import gymnasium as gym
@@ -9,6 +12,7 @@ from stable_baselines3 import A2C, DDPG, DQN, PPO, SAC, TD3
 from stable_baselines3.common.monitor import Monitor
 
 from ..protocol.messages import (
+    CheckpointInfo,
     RunConfig,
     RunState,
     StatusResponse,
@@ -43,6 +47,14 @@ class TrainingRunner:
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._subscribers: Set[asyncio.Queue] = set()
+
+        self._model = None
+        self._env = None
+        self._checkpoints_dir = Path("checkpoints")
+        self._checkpoints_dir.mkdir(exist_ok=True)
+        self._checkpoints: List[CheckpointInfo] = []
+        self._current_reward_code = ""
+        self._run_start_time = 0.0
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -126,7 +138,7 @@ class TrainingRunner:
             self._broadcast({
                 "type": "status",
                 **self.get_status().model_dump()
-            })
+})
 
     def stop(self) -> None:
         if self.state in (RunState.TRAINING, RunState.PAUSED, RunState.STARTING):
@@ -138,8 +150,116 @@ class TrainingRunner:
                 **self.get_status().model_dump()
             })
 
+    def apply_steering(self, new_reward_code: str, new_hyperparameters: Optional[Dict[str, Any]] = None) -> None:
+        """Apply steering changes - update reward code and optionally hyperparameters."""
+        if self._model is None:
+            raise RuntimeError("No active model to steer")
+
+        # Save checkpoint before applying changes
+        self.save_checkpoint()
+
+        # Update reward code
+        self._write_reward_code(new_reward_code)
+        self._current_reward_code = new_reward_code
+
+        # Update hyperparameters if provided
+        if new_hyperparameters is not None and self.current_config:
+            self.current_config.hyperparameters.update(new_hyperparameters)
+            # Note: SB3 doesn't support dynamic hyperparameter changes easily
+            # For v1, we'll just update the config; user can restart with new params
+
+        logger.info("Applied steering changes")
+
+    def _read_reward_code(self) -> str:
+        """Read the current reward.py from the project directory."""
+        try:
+            reward_path = Path("reward.py")
+            if reward_path.exists():
+                return reward_path.read_text()
+        except Exception:
+            pass
+        return ""
+
+    def _write_reward_code(self, code: str) -> None:
+        """Write reward.py to the project directory."""
+        try:
+            Path("reward.py").write_text(code)
+        except Exception as e:
+            logger.error(f"Failed to write reward.py: {e}")
+
+    def save_checkpoint(self, checkpoint_id: Optional[str] = None) -> CheckpointInfo:
+        """Save a checkpoint of the current model and reward code."""
+        if self._model is None:
+            raise RuntimeError("No model to checkpoint")
+
+        import uuid
+        if checkpoint_id is None:
+            checkpoint_id = str(uuid.uuid4())[:8]
+
+        # Save model
+        model_path = self._checkpoints_dir / f"{checkpoint_id}.zip"
+        self._model.save(str(model_path))
+
+        # Get current reward code
+        reward_code = self._read_reward_code()
+
+        # Create checkpoint info
+        timesteps = self.latest_telemetry.timesteps if self.latest_telemetry else 0
+        episode_count = self.latest_telemetry.episode_count if self.latest_telemetry else 0
+        mean_reward = self.latest_telemetry.mean_reward_100 if self.latest_telemetry else None
+
+        checkpoint = CheckpointInfo(
+            checkpoint_id=checkpoint_id,
+            run_id=self.current_config.run_id if self.current_config else "",
+            timesteps=timesteps,
+            episode_count=episode_count,
+            mean_reward_100=mean_reward,
+            created_at=time.time(),
+            reward_code=reward_code,
+            hyperparameters=dict(self.current_config.hyperparameters) if self.current_config else {},
+            algorithm=self.current_config.algorithm if self.current_config else "",
+            env_id=self.current_config.env_id if self.current_config else "",
+        )
+
+        self._checkpoints.append(checkpoint)
+        self._current_reward_code = reward_code
+
+        logger.info(f"Saved checkpoint {checkpoint_id} at {timesteps} timesteps")
+        return checkpoint
+
+    def load_checkpoint(self, checkpoint_id: str) -> CheckpointInfo:
+        """Load a checkpoint - restores model weights and reward code."""
+        checkpoint = next((c for c in self._checkpoints if c.checkpoint_id == checkpoint_id), None)
+        if checkpoint is None:
+            raise ValueError(f"Checkpoint {checkpoint_id} not found")
+
+        if self._model is None:
+            raise RuntimeError("No model to load checkpoint into")
+
+        model_path = self._checkpoints_dir / f"{checkpoint_id}.zip"
+        if not model_path.exists():
+            raise FileNotFoundError(f"Checkpoint model file not found: {model_path}")
+
+        # Load model weights
+        self._model = self._model.__class__.load(str(model_path), env=self._env)
+
+        # Restore reward code
+        self._write_reward_code(checkpoint.reward_code)
+        self._current_reward_code = checkpoint.reward_code
+
+        logger.info(f"Loaded checkpoint {checkpoint_id}")
+        return checkpoint
+
+    def list_checkpoints(self) -> List[CheckpointInfo]:
+        """List all available checkpoints."""
+        return list(self._checkpoints)
+
+    def get_checkpoint(self, checkpoint_id: str) -> Optional[CheckpointInfo]:
+        """Get a specific checkpoint by ID."""
+        return next((c for c in self._checkpoints if c.checkpoint_id == checkpoint_id), None)
+
     def _run_worker(self, config: RunConfig) -> None:
-        env = None
+        self._env = None
         try:
             logger.info(f"Starting training run {config.run_id}: env={config.env_id}, algo={config.algorithm}, steps={config.total_timesteps}")
             self.state = RunState.TRAINING
@@ -150,7 +270,7 @@ class TrainingRunner:
 
             # Create monitored Gymnasium environment
             base_env = gym.make(config.env_id)
-            env = Monitor(base_env)
+            self._env = Monitor(base_env)
 
             algo_cls = ALGO_MAP.get(config.algorithm.upper(), PPO)
             policy = "MlpPolicy"
@@ -159,7 +279,10 @@ class TrainingRunner:
             if config.seed is not None:
                 algo_kwargs["seed"] = config.seed
 
-            model = algo_cls(policy, env, verbose=0, **algo_kwargs)
+            self._model = algo_cls(policy, self._env, verbose=0, **algo_kwargs)
+
+            # Read initial reward code
+            self._current_reward_code = self._read_reward_code()
 
             cb = StreamingCallback(
                 run_id=config.run_id,
@@ -169,7 +292,7 @@ class TrainingRunner:
                 pause_event=self._pause_event,
             )
 
-            model.learn(total_timesteps=config.total_timesteps, callback=cb)
+            self._model.learn(total_timesteps=config.total_timesteps, callback=cb)
 
             if self._stop_event.is_set():
                 self.state = RunState.STOPPED
@@ -181,9 +304,9 @@ class TrainingRunner:
             self.error = str(e)
             self.state = RunState.FAILED
         finally:
-            if env is not None:
+            if self._env is not None:
                 try:
-                    env.close()
+                    self._env.close()
                 except Exception:
                     pass
             self._broadcast({
