@@ -31,17 +31,26 @@ class RewardShapingWrapper(Wrapper):
         info: dict,
     ) -> float:
         # ----- Edit below this line -----
-        # Penalize jerky movements (rapid action changes)
-        if hasattr(self, 'last_action') and self.last_action is not None:
-            if action != self.last_action:
-                # Apply penalty for action oscillation
-                return original_reward - 0.5
-        else:
-            self.last_action = action
+        # ----- Edit below this line -----
+        import numpy as np
         
-        # Update last action for next step
-        self.last_action = action
-        return original_reward
+        # Calculate velocity change (jerkiness indicator)
+        # Access previous cart velocity from info if available
+        prev_cart_vel = info.get('previous_cart_velocity', obs[1])
+        current_cart_vel = obs[1]
+        velocity_change = current_cart_vel - prev_cart_vel
+        
+        # Penalize large velocity changes (jerky movements)
+        # Use a threshold to detect significant acceleration changes
+        jerk_penalty = 0.0
+        if not terminated and not truncated:
+            # Calculate magnitude of velocity change
+            vel_diff = np.abs(velocity_change)
+            # Apply penalty for jerky movements (large velocity changes)
+            jerk_penalty = -np.clip(vel_diff * 5.0, 0, 10.0)
+        
+        return original_reward + jerk_penalty
+        # --------------------------------
         # --------------------------------
 
 

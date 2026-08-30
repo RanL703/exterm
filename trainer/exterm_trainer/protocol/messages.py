@@ -113,3 +113,82 @@ class RollbackRequest(BaseModel):
 class RollbackResponse(BaseModel):
     success: bool
     message: str
+
+
+# === Agentic Features Models ===
+
+class TrainingAnalysis(BaseModel):
+    """Analysis of training performance."""
+    run_id: str
+    status: RunState
+    progress_pct: float
+    total_timesteps: int
+    episodes: int
+    mean_reward_100: Optional[float]
+    recent_reward_trend: Literal["improving", "stable", "degrading", "volatile"]
+    fps: int
+    issues: List[str]
+    recommendations: List[str]
+
+
+class AnalysisResponse(BaseModel):
+    """Response from training analysis."""
+    analysis: TrainingAnalysis
+    suggested_steering: List[str]
+    suggested_hyperparams: Dict[str, Any]
+
+
+class AutoSteerConfig(BaseModel):
+    """Configuration for autonomous steering."""
+    enabled: bool = False
+    max_actions_per_hour: int = 3
+    min_reward_threshold: Optional[float] = None
+    target_reward: Optional[float] = None
+    allowed_instructions: List[str] = Field(default_factory=lambda: [
+        "penalize jerky movements",
+        "encourage exploration",
+        "reward longer episodes",
+        "be more cautious",
+        "increase entropy",
+        "reduce learning rate",
+    ])
+
+
+class AutoSteerStatus(BaseModel):
+    """Current status of auto-steer."""
+    enabled: bool
+    actions_this_hour: int
+    last_action_time: Optional[float]
+    last_instruction: Optional[str]
+    config: AutoSteerConfig
+
+
+class AgentActionLog(BaseModel):
+    """Audit log entry for agent actions."""
+    timestamp: float
+    action_type: Literal["analyze", "steer", "hyperparam_suggest", "auto_steer"]
+    instruction: Optional[str]
+    applied: bool
+    requires_confirmation: bool
+    checkpoint_id: Optional[str]
+    diff: Optional[str]
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentLogResponse(BaseModel):
+    logs: List[AgentActionLog]
+    total: int
+
+
+class SteeringSuggestion(BaseModel):
+    instruction: str
+    rationale: str
+    confidence: float
+    risk_level: Literal["low", "medium", "high"]
+
+
+class HyperparamSuggestion(BaseModel):
+    param: str
+    current_value: Any
+    suggested_value: Any
+    rationale: str

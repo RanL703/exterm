@@ -2,25 +2,36 @@ import asyncio
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, List, Optional
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from .agent.graph import run_analysis, run_steering
 from .engine.runner import TrainingRunner
 from .protocol.messages import (
+    AgentActionLog,
+    AgentLogResponse,
+    AnalysisResponse,
+    AutoSteerConfig,
+    AutoSteerStatus,
     CheckpointInfo,
     CheckpointListResponse,
     CommandMessage,
+    HyperparamSuggestion,
     RollbackRequest,
     RollbackResponse,
     RunConfig,
+    RunState,
     StatusResponse,
     SteerRequest,
     SteerResponse,
+    SteeringSuggestion,
+    TrainingAnalysis,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -36,195 +47,99 @@ runner = TrainingRunner()
 BEARER_TOKEN: Optional[str] = os.environ.get("EXTERM_BEARER_TOKEN")
 
 
+# === Guardrails Configuration ===
+class GuardrailsConfig:
+    """Centralized guardrails configuration."""
+    # Rate limiting
+    MAX_LLM_CALLS_PER_MINUTE: int = 10
+    MAX_STEER_ACTIONS_PER_HOUR: int = 10
+    MAX_ANALYSIS_CALLS_PER_MINUTE: int = 5
+    
+    # Auto-steer limits
+    AUTO_STEER_MAX_ACTIONS_PER_HOUR: int = 3
+    AUTO_STEER_MIN_INTERVAL_SECONDS: int = 300  # 5 minutes between auto-actions
+    
+    # Input validation
+    MAX_INSTRUCTION_LENGTH: int = 500
+    FORBIDDEN_PATTERNS: List[str] = [
+        "import ", "exec(", "eval(", "__import__", "subprocess",
+        "os.system", "open(", "file(", "compile(",
+        "observation_space", "action_space", "gym.make",
+        "def step", "def reset", "def __init__",
+        "class ", "Wrapper",
+    ]
+    
+    # Code safety
+    ALLOWED_MODULES: List[str] = ["numpy", "np", "math", "random"]
+    MAX_CODE_LINES: int = 50
+    
+    # Confirmation thresholds
+    RISKY_CHANGE_PATTERNS: List[str] = [
+        'import', 'class ', 'def make_env', 'def step', 'def reset',
+        'observation_space', 'action_space', 'gym.make', 'Wrapper',
+    ]
+
+
+GUARDRAILS = GuardrailsConfig()
+
+# Rate limiting state
+_llm_call_times: List[float] = []
+_steer_action_times: List[float] = []
+_analysis_call_times: List[float] = []
+
+# Agent action audit log
+_agent_action_log: List[AgentActionLog] = []
+_auto_steer_config = AutoSteerConfig()
+_auto_steer_action_times: List[float] = []
+
+
 def set_bearer_token(token: Optional[str]) -> None:
     """Set the bearer token for authentication."""
     global BEARER_TOKEN
     BEARER_TOKEN = token
 
 
-async def generate_steering_code_via_llm(current_code: str, instruction: str, env_id: str, algorithm: str) -> str:
-    """Use local Ollama LLM to translate natural language instruction into reward code modification."""
+def check_rate_limit(call_times: List[float], max_calls: int, window_seconds: int = 60) -> bool:
+    """Check if rate limit is exceeded."""
+    now = time.time()
+    call_times[:] = [t for t in call_times if now - t < window_seconds]
+    return len(call_times) < max_calls
+
+
+def record_call(call_times: List[float]) -> None:
+    """Record a call timestamp."""
+    call_times.append(time.time())
+
+
+def validate_instruction(instruction: str) -> tuple[bool, Optional[str]]:
+    """Validate steering instruction for safety."""
+    if len(instruction) > GUARDRAILS.MAX_INSTRUCTION_LENGTH:
+        return False, f"Instruction too long (max {GUARDRAILS.MAX_INSTRUCTION_LENGTH} chars)"
     
-    system_prompt = f"""You are an expert reinforcement learning engineer. Your task is to modify a reward shaping wrapper for a Gymnasium environment.
-
-Environment: {env_id}
-Algorithm: {algorithm}
-
-The current reward.py file contains a `RewardShapingWrapper` class with a `reward_fn` method that takes:
-- obs: np.ndarray (observation)
-- action: int or np.ndarray (action)
-- original_reward: float (original environment reward)
-- terminated: bool
-- truncated: bool
-- info: dict
-
-Your job is to modify ONLY the `reward_fn` method to implement the user's steering instruction. Return ONLY the modified reward_fn method (not the entire file), with the exact same signature.
-
-Rules:
-1. Only modify the reward calculation logic inside reward_fn
-2. Do not change imports, class structure, or method signatures
-3. Do not modify observation_space, action_space, or environment creation
-4. Use numpy for math operations (already imported as np)
-5. The action type depends on the environment: int for discrete, np.ndarray for continuous
-6. Return valid Python code that can be directly inserted into the method
-
-Current reward_fn body (between the markers):
-```python
-# ----- Edit below this line -----
-return original_reward
-# --------------------------------
-```"""
-
-    user_prompt = f"Steering instruction: {instruction}\n\nModify the reward_fn to implement this instruction."
-
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{OLLAMA_BASE_URL}/api/chat",
-                json={
-                    "model": OLLAMA_MODEL,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.2,
-                        "top_p": 0.9,
-                    }
-                }
-            )
-            response.raise_for_status()
-            data = response.json()
-            llm_response = data.get("message", {}).get("content", "")
-            
-            # Extract the modified reward_fn from the response
-            new_reward_fn = extract_reward_fn_from_llm_response(llm_response)
-            
-            # Replace the reward_fn in the current code
-            return replace_reward_fn_in_code(current_code, new_reward_fn)
-            
-    except Exception as e:
-        logger.warning(f"LLM steering failed, falling back to keyword-based: {e}")
-        # Fallback to keyword-based approach
-        return apply_steering_instruction_keyword(current_code, instruction)
-
-
-def extract_reward_fn_from_llm_response(response: str) -> str:
-    """Extract the reward_fn method body from LLM response."""
-    # Try to find code blocks
-    import re
+    instruction_lower = instruction.lower()
+    for pattern in GUARDRAILS.FORBIDDEN_PATTERNS:
+        if pattern in instruction_lower:
+            return False, f"Forbidden pattern detected: {pattern}"
     
-    # Look for python code blocks
-    code_blocks = re.findall(r'```python\n(.*?)\n```', response, re.DOTALL)
-    if code_blocks:
-        return code_blocks[0].strip()
-    
-    # Look for any code-like content
-    code_blocks = re.findall(r'```\n(.*?)\n```', response, re.DOTALL)
-    if code_blocks:
-        return code_blocks[0].strip()
-    
-    # If no code blocks, try to extract the function body directly
-    lines = response.split('\n')
-    in_function = False
-    function_lines = []
-    for line in lines:
-        if 'def reward_fn' in line or 'return original_reward' in line or 'return ' in line:
-            in_function = True
-        if in_function:
-            function_lines.append(line)
-            # Stop at empty line after return or at end of function
-            if 'return' in line and len(function_lines) > 3:
-                break
-    
-    if function_lines:
-        return '\n'.join(function_lines).strip()
-    
-    # Fallback: return the whole response (will likely fail but let's try)
-    return response.strip()
+    return True, None
 
 
-def replace_reward_fn_in_code(code: str, new_reward_fn: str) -> str:
-    """Replace the reward_fn method body in the code with the new version."""
-    lines = code.split('\n')
-    in_reward_fn = False
-    found_marker = False
-    result_lines = []
-    i = 0
-    
-    while i < len(lines):
-        line = lines[i]
-        
-        if 'def reward_fn' in line:
-            in_reward_fn = True
-            result_lines.append(line)
-            i += 1
-            continue
-            
-        if in_reward_fn and '# ----- Edit below this line -----' in line:
-            found_marker = True
-            result_lines.append(line)
-            # Add the new reward function body
-            for new_line in new_reward_fn.split('\n'):
-                result_lines.append('        ' + new_line)
-            # Skip until we find the end marker
-            while i < len(lines) and '# --------------------------------' not in lines[i]:
-                i += 1
-            if i < len(lines):
-                result_lines.append(lines[i])  # Add the end marker
-            in_reward_fn = False
-            i += 1
-            continue
-            
-        if not in_reward_fn or not found_marker:
-            result_lines.append(line)
-            
-        i += 1
-    
-    return '\n'.join(result_lines)
+def is_risky_change(old_code: str, new_code: str) -> bool:
+    """Determine if a code change is risky and requires confirmation."""
+    for pattern in GUARDRAILS.RISKY_CHANGE_PATTERNS:
+        if pattern in new_code and pattern not in old_code:
+            return True
+        if pattern in old_code and pattern not in new_code:
+            return True
+    return False
 
 
-def apply_steering_instruction_keyword(code: str, instruction: str) -> str:
-    """Fallback keyword-based steering (original implementation)."""
-    lines = code.split('\n')
-    modified = False
+def log_agent_action(action: AgentActionLog) -> None:
+    """Log agent action for audit trail."""
+    _agent_action_log.append(action)
+    if len(_agent_action_log) > 1000:
+        _agent_action_log.pop(0)
 
-    for i, line in enumerate(lines):
-        if 'return original_reward' in line and not modified:
-            instruction_lower = instruction.lower()
-            if 'penalize' in instruction_lower and 'jerk' in instruction_lower:
-                lines[i] = line.replace(
-                    'return original_reward',
-                    'return original_reward - 0.1 * np.sum(np.square(action))  # penalize jerky actions'
-                )
-                modified = True
-            elif 'cautious' in instruction_lower or 'safe' in instruction_lower:
-                lines[i] = line.replace(
-                    'return original_reward',
-                    'return original_reward - 0.05 * np.sum(np.square(action))  # cautious: penalize large actions'
-                )
-                modified = True
-            elif 'reward' in instruction_lower and 'long' in instruction_lower:
-                lines[i] = line.replace(
-                    'return original_reward',
-                    'return original_reward + 0.01 * (1.0 - terminated)  # reward longer episodes'
-                )
-                modified = True
-            elif 'explore' in instruction_lower:
-                lines[i] = line.replace(
-                    'return original_reward',
-                    'return original_reward + 0.001 * np.random.randn()  # encourage exploration'
-                )
-                modified = True
-
-    if not modified:
-        for i, line in enumerate(lines):
-            if 'return original_reward' in line:
-                lines[i] = line + f'  # steering: {instruction}'
-                break
-
-    return '\n'.join(lines)
 
 # Security scheme
 security = HTTPBearer(auto_error=False)
@@ -233,7 +148,6 @@ security = HTTPBearer(auto_error=False)
 def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> None:
     """Verify bearer token if one is configured."""
     if BEARER_TOKEN is None:
-        # No token configured - allow all (local development mode)
         return
     if credentials is None or credentials.credentials != BEARER_TOKEN:
         raise HTTPException(
@@ -327,25 +241,54 @@ async def restore_checkpoint(checkpoint_id: str):
 @app.post("/api/v1/steer", response_model=SteerResponse, dependencies=[Depends(verify_token)])
 async def steer(request: SteerRequest):
     try:
+        # Guardrails: validate instruction
+        valid, error = validate_instruction(request.instruction)
+        if not valid:
+            raise HTTPException(status_code=400, detail=f"Instruction validation failed: {error}")
+        
+        # Guardrails: rate limiting
+        if not check_rate_limit(_steer_action_times, GUARDRAILS.MAX_STEER_ACTIONS_PER_HOUR, 3600):
+            raise HTTPException(status_code=429, detail="Rate limit exceeded: max steer actions per hour reached")
+        record_call(_steer_action_times)
+        
+        if not check_rate_limit(_llm_call_times, GUARDRAILS.MAX_LLM_CALLS_PER_MINUTE):
+            raise HTTPException(status_code=429, detail="Rate limit exceeded: max LLM calls per minute reached")
+        record_call(_llm_call_times)
+
         # Create a checkpoint before steering
         checkpoint = runner.save_checkpoint()
 
         # Read current reward code
         current_code = runner._read_reward_code()
 
-        # Get environment and algorithm info for the LLM
+        # Get environment and algorithm info
         env_id = runner.current_config.env_id if runner.current_config else "CartPole-v1"
         algorithm = runner.current_config.algorithm if runner.current_config else "PPO"
 
-        # Apply steering via LLM (with fallback to keyword-based)
-        new_code = await generate_steering_code_via_llm(current_code, request.instruction, env_id, algorithm)
+        # Apply steering via LangGraph agent
+        result = await run_steering(current_code, request.instruction, env_id, algorithm)
 
-        # Check if change is risky (changes action/observation space, core training loop)
-        requires_confirmation = is_risky_change(current_code, new_code)
+        if result.get("error"):
+            logger.warning(f"Steering failed, falling back: {result['error']}")
+
+        new_code = result.get("new_code", current_code)
+        diff = result.get("diff", "")
+        requires_confirmation = result.get("requires_confirmation", False)
+        risk_level = result.get("risk_level", "low")
 
         if requires_confirmation:
+            log_agent_action(AgentActionLog(
+                timestamp=time.time(),
+                action_type="steer",
+                instruction=request.instruction,
+                applied=False,
+                requires_confirmation=True,
+                checkpoint_id=checkpoint.checkpoint_id,
+                diff=diff,
+                metadata={"env_id": env_id, "algorithm": algorithm, "risk_level": risk_level}
+            ))
             return SteerResponse(
-                diff=generate_diff(current_code, new_code),
+                diff=diff,
                 applied=False,
                 requires_confirmation=True,
                 checkpoint_id=checkpoint.checkpoint_id,
@@ -355,8 +298,19 @@ async def steer(request: SteerRequest):
         # Apply the change
         runner.apply_steering(new_code)
 
+        log_agent_action(AgentActionLog(
+            timestamp=time.time(),
+            action_type="steer",
+            instruction=request.instruction,
+            applied=True,
+            requires_confirmation=False,
+            checkpoint_id=checkpoint.checkpoint_id,
+            diff=diff,
+            metadata={"env_id": env_id, "algorithm": algorithm, "risk_level": risk_level}
+        ))
+
         return SteerResponse(
-            diff=generate_diff(current_code, new_code),
+            diff=diff,
             applied=True,
             requires_confirmation=False,
             checkpoint_id=checkpoint.checkpoint_id,
@@ -374,11 +328,26 @@ async def confirm_steer(request: SteerRequest):
         env_id = runner.current_config.env_id if runner.current_config else "CartPole-v1"
         algorithm = runner.current_config.algorithm if runner.current_config else "PPO"
         
-        new_code = await generate_steering_code_via_llm(current_code, request.instruction, env_id, algorithm)
+        result = await run_steering(current_code, request.instruction, env_id, algorithm)
+        new_code = result.get("new_code", current_code)
+        diff = result.get("diff", "")
+        
         runner.apply_steering(new_code)
         checkpoint = runner.save_checkpoint()
+        
+        log_agent_action(AgentActionLog(
+            timestamp=time.time(),
+            action_type="steer",
+            instruction=request.instruction,
+            applied=True,
+            requires_confirmation=False,
+            checkpoint_id=checkpoint.checkpoint_id,
+            diff=diff,
+            metadata={"env_id": env_id, "algorithm": algorithm, "confirmed": True}
+        ))
+        
         return SteerResponse(
-            diff=generate_diff(current_code, new_code),
+            diff=diff,
             applied=True,
             requires_confirmation=False,
             checkpoint_id=checkpoint.checkpoint_id,
@@ -387,6 +356,96 @@ async def confirm_steer(request: SteerRequest):
     except Exception as e:
         logger.exception(f"Steering confirmation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/analyze", response_model=AnalysisResponse, dependencies=[Depends(verify_token)])
+async def analyze_training():
+    """Analyze current training performance and suggest improvements."""
+    try:
+        # Guardrails: rate limiting
+        if not check_rate_limit(_analysis_call_times, GUARDRAILS.MAX_ANALYSIS_CALLS_PER_MINUTE):
+            raise HTTPException(status_code=429, detail="Rate limit exceeded: max analysis calls per minute reached")
+        record_call(_analysis_call_times)
+
+        if runner.state != RunState.TRAINING:
+            raise HTTPException(status_code=400, detail="Training not in progress")
+
+        current_code = runner._read_reward_code()
+        env_id = runner.current_config.env_id if runner.current_config else "CartPole-v1"
+        algorithm = runner.current_config.algorithm if runner.current_config else "PPO"
+        
+        # Get telemetry and reward history
+        telemetry = runner.get_status().model_dump()
+        
+        # Extract reward history from telemetry (stored in runner)
+        # For now, use what's available
+        reward_history = []
+        step_history = []
+        if runner.latest_telemetry:
+            # We'd need to track history in the runner
+            pass
+
+        result = await run_analysis(current_code, env_id, algorithm, telemetry, reward_history, step_history)
+
+        log_agent_action(AgentActionLog(
+            timestamp=time.time(),
+            action_type="analyze",
+            instruction=None,
+            applied=False,
+            requires_confirmation=False,
+            checkpoint_id=None,
+            diff=None,
+            metadata={"env_id": env_id, "algorithm": algorithm}
+        ))
+
+        return AnalysisResponse(
+            analysis=TrainingAnalysis(
+                run_id=runner.current_config.run_id if runner.current_config else "",
+                status=runner.state,
+                progress_pct=telemetry.get("progress", 0) * 100,
+                total_timesteps=telemetry.get("total_timesteps", 0),
+                episodes=telemetry.get("episodes", 0),
+                mean_reward_100=telemetry.get("mean_reward_100"),
+                recent_reward_trend="stable",
+                fps=telemetry.get("fps", 0),
+                issues=[],
+                recommendations=[],
+            ),
+            suggested_steering=[s.instruction for s in result.get("steering_suggestions", [])],
+            suggested_hyperparams={s.param: s.suggested_value for s in result.get("hyperparam_suggestions", [])},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/agent/log", response_model=AgentLogResponse, dependencies=[Depends(verify_token)])
+async def get_agent_log(limit: int = 100):
+    """Get agent action audit log."""
+    logs = _agent_action_log[-limit:] if limit else _agent_action_log
+    return AgentLogResponse(logs=logs, total=len(_agent_action_log))
+
+
+@app.get("/api/v1/agent/auto-steer/status", response_model=AutoSteerStatus, dependencies=[Depends(verify_token)])
+async def get_auto_steer_status():
+    """Get auto-steer configuration and status."""
+    return AutoSteerStatus(
+        enabled=_auto_steer_config.enabled,
+        actions_this_hour=len([t for t in _auto_steer_action_times if time.time() - t < 3600]),
+        last_action_time=_auto_steer_action_times[-1] if _auto_steer_action_times else None,
+        last_instruction=None,
+        config=_auto_steer_config,
+    )
+
+
+@app.post("/api/v1/agent/auto-steer/config", response_model=AutoSteerStatus, dependencies=[Depends(verify_token)])
+async def update_auto_steer_config(config: AutoSteerConfig):
+    """Update auto-steer configuration."""
+    global _auto_steer_config
+    _auto_steer_config = config
+    return await get_auto_steer_status()
 
 
 @app.post("/api/v1/rollback", response_model=RollbackResponse, dependencies=[Depends(verify_token)])
@@ -401,21 +460,6 @@ async def rollback(request: RollbackRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-
-def is_risky_change(old_code: str, new_code: str) -> bool:
-    """Determine if a code change is risky and requires confirmation."""
-    # Check for changes to observation/action space, imports, class structure
-    risky_patterns = [
-        'import', 'class ', 'def make_env', 'def step', 'def reset',
-        'observation_space', 'action_space', 'gym.make', 'Wrapper',
-    ]
-    for pattern in risky_patterns:
-        if pattern in new_code and pattern not in old_code:
-            return True
-        if pattern in old_code and pattern not in new_code:
-            return True
-    return False
 
 
 def generate_diff(old_code: str, new_code: str) -> str:
@@ -433,7 +477,6 @@ async def websocket_endpoint(websocket: WebSocket):
     if BEARER_TOKEN is not None:
         token = websocket.query_params.get("token")
         if not token:
-            # Check Authorization header
             auth_header = websocket.headers.get("authorization", "")
             if auth_header.startswith("Bearer "):
                 token = auth_header[7:]
@@ -444,7 +487,6 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     queue = runner.subscribe()
 
-    # Send current status immediately upon connection
     initial_status = {
         "type": "status",
         **runner.get_status().model_dump(),
