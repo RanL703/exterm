@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pc from "picocolors";
+import { resolveTrainerHost } from "../autodetect.js";
+import { setLastHost, setLastToken } from "../config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -13,15 +15,20 @@ export interface DashboardOptions {
 }
 
 export async function dashboardCommand(options: DashboardOptions): Promise<void> {
-  const host = options.host || "http://127.0.0.1:8765";
   const port = options.port || "3000";
   const shouldOpen = options.open !== false;
-  const token = options.token;
+
+  // Resolve host and token with auto-detection
+  const { host, token } = await resolveTrainerHost(options.host, options.token);
 
   const dashboardDir = path.resolve(__dirname, "../../dashboard");
 
   console.log(pc.bold(pc.cyan("\n  exterm dashboard")) + pc.dim(` - Starting on http://localhost:${port}\n`));
   console.log(pc.dim(`  Connecting to trainer at ${host}`));
+
+  // Save successful host/token for future use
+  await setLastHost(host);
+  if (token) await setLastToken(token);
 
   // Build dashboard if needed
   const distDir = path.join(dashboardDir, "dist");
