@@ -192,3 +192,15 @@ class HyperparamSuggestion(BaseModel):
     current_value: Any
     suggested_value: Any
     rationale: str
+
+
+class VideoInfo(BaseModel):
+    run_id: str
+    filename: str
+    path: str
+    size_bytes: int
+    created_at: float
+
+
+class VideoListResponse(BaseModel):
+    videos: List[VideoInfo]

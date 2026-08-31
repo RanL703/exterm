@@ -32,6 +32,8 @@ from .protocol.messages import (
     SteerResponse,
     SteeringSuggestion,
     TrainingAnalysis,
+    VideoInfo,
+    VideoListResponse,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -460,6 +462,27 @@ async def rollback(request: RollbackRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/v1/videos", response_model=VideoListResponse, dependencies=[Depends(verify_token)])
+async def list_videos(run_id: Optional[str] = None):
+    """List available episode replay videos."""
+    videos = runner.list_videos(run_id)
+    return VideoListResponse(videos=[VideoInfo(**v) for v in videos])
+
+
+@app.get("/api/v1/videos/{run_id}/{filename}", dependencies=[Depends(verify_token)])
+async def get_video(run_id: str, filename: str):
+    """Stream an episode replay video."""
+    from fastapi.responses import FileResponse
+    video_path = runner.get_video_path(run_id, filename)
+    if not video_path:
+        raise HTTPException(status_code=404, detail="Video not found")
+    return FileResponse(
+        path=video_path,
+        media_type="video/mp4",
+        filename=filename,
+    )
 
 
 def generate_diff(old_code: str, new_code: str) -> str:

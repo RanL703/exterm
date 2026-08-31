@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
 import gymnasium as gym
+from gymnasium.wrappers import RecordVideo
 from stable_baselines3 import A2C, DDPG, DQN, PPO, SAC, TD3
 from stable_baselines3.common.monitor import Monitor
 
@@ -52,9 +53,12 @@ class TrainingRunner:
         self._env = None
         self._checkpoints_dir = Path("checkpoints")
         self._checkpoints_dir.mkdir(exist_ok=True)
+        self._videos_dir = Path("videos")
+        self._videos_dir.mkdir(exist_ok=True)
         self._checkpoints: List[CheckpointInfo] = []
         self._current_reward_code = ""
         self._run_start_time = 0.0
+        self._video_episode_trigger = None
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -138,7 +142,7 @@ class TrainingRunner:
             self._broadcast({
                 "type": "status",
                 **self.get_status().model_dump()
-})
+            })
 
     def stop(self) -> None:
         if self.state in (RunState.TRAINING, RunState.PAUSED, RunState.STARTING):
@@ -258,6 +262,36 @@ class TrainingRunner:
         """Get a specific checkpoint by ID."""
         return next((c for c in self._checkpoints if c.checkpoint_id == checkpoint_id), None)
 
+    def list_videos(self, run_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List available video files."""
+        videos = []
+        if run_id:
+            search_dirs = [self._videos_dir / run_id]
+        else:
+            search_dirs = [d for d in self._videos_dir.iterdir() if d.is_dir()]
+
+        for run_dir in search_dirs:
+            if not run_dir.exists() or not run_dir.is_dir():
+                continue
+            for video_file in run_dir.glob("*.mp4"):
+                stat = video_file.stat()
+                videos.append({
+                    "run_id": run_dir.name,
+                    "filename": video_file.name,
+                    "path": str(video_file),
+                    "size_bytes": stat.st_size,
+                    "created_at": stat.st_mtime,
+                })
+
+        return sorted(videos, key=lambda v: v["created_at"], reverse=True)
+
+    def get_video_path(self, run_id: str, filename: str) -> Optional[Path]:
+        """Get the path to a specific video file."""
+        video_path = self._videos_dir / run_id / filename
+        if video_path.exists() and video_path.is_file():
+            return video_path
+        return None
+
     def _run_worker(self, config: RunConfig) -> None:
         self._env = None
         try:
@@ -268,9 +302,20 @@ class TrainingRunner:
                 **self.get_status().model_dump()
             })
 
-            # Create monitored Gymnasium environment
-            base_env = gym.make(config.env_id)
+            # Create monitored Gymnasium environment with video recording
+            base_env = gym.make(config.env_id, render_mode="rgb_array")
             self._env = Monitor(base_env)
+
+            # Wrap with RecordVideo for episode replay
+            # Record every episode (episode_trigger=lambda x: True)
+            video_dir = self._videos_dir / config.run_id
+            video_dir.mkdir(exist_ok=True)
+            self._env = RecordVideo(
+                self._env,
+                video_folder=str(video_dir),
+                episode_trigger=lambda x: True,
+                name_prefix=f"episode",
+            )
 
             algo_cls = ALGO_MAP.get(config.algorithm.upper(), PPO)
             policy = "MlpPolicy"
