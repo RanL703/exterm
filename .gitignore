@@ -20,3 +20,9 @@ dist/
 .vscode/
 .idea/
 *.swp
+
+# Local agent metadata and trainer test artifacts
+.agents/
+.claude/
+trainer/checkpoints/
+trainer/videos/
