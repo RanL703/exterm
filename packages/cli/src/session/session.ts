@@ -43,6 +43,8 @@ export class InteractiveSession {
       resume: async () => this.control("resume"),
       stop: async () => this.control("stop"),
       checkpoint: async () => this.checkpoint(),
+      logs: async () => this.logs(),
+      rollback: async (args) => this.rollback(args[0]),
       steer: async (args) => this.steer(args.join(" ")),
       approve: async (args) => this.approve(args[0]),
       model: async (args) => this.model(args),
@@ -108,6 +110,30 @@ export class InteractiveSession {
     this.write(pc.green(`  checkpoint ${checkpoint.checkpoint_id} saved at ${checkpoint.timesteps.toLocaleString()} steps`));
   }
 
+  private async logs(): Promise<void> {
+    const response = await this.api.getAgentLog();
+    if (response.logs.length === 0) { this.write(pc.dim("  no agent actions recorded")); return; }
+    for (const entry of response.logs) {
+      const timestamp = typeof entry.timestamp === "number" ? new Date(entry.timestamp * 1000).toISOString() : "unknown time";
+      const action = typeof entry.action_type === "string" ? entry.action_type : "action";
+      const instruction = typeof entry.instruction === "string" ? entry.instruction : "";
+      this.write(`  ${pc.dim(timestamp)}  ${action}  ${instruction}`);
+    }
+    this.write(pc.dim(`  ${response.total} total agent actions`));
+  }
+
+  private async rollback(checkpointId?: string): Promise<void> {
+    if (!checkpointId) {
+      const response = await this.api.listCheckpoints();
+      if (response.checkpoints.length === 0) { this.write(pc.yellow("  no checkpoints found")); return; }
+      for (const [index, checkpoint] of response.checkpoints.entries()) this.write(`  ${index + 1}. ${checkpoint.checkpoint_id} · ${checkpoint.timesteps.toLocaleString()} steps · ${checkpoint.env_id}`);
+      this.write(pc.dim("  usage  /rollback <checkpoint-id>"));
+      return;
+    }
+    const response = await this.api.rollback({ checkpoint_id: checkpointId });
+    this.write(response.success ? pc.green(`  rollback complete · ${response.message}`) : pc.red(`  rollback failed · ${response.message}`));
+  }
+
   private async steer(instruction: string): Promise<void> {
     if (!instruction) { this.write(pc.yellow("  usage  /steer <instruction>")); return; }
     this.write(pc.dim(`  steering  ${instruction}`));
@@ -140,7 +166,7 @@ export class InteractiveSession {
   }
 
   private async help(): Promise<void> {
-    this.write(pc.dim("  /train [--env CartPole-v1 --algo PPO --steps 50000] /model [name|number] /status /pause /resume /stop /checkpoint /steer /approve /dashboard /clear /exit"));
+    this.write(pc.dim("  /train [--env CartPole-v1 --algo PPO --steps 50000] /model [name|number] /status /pause /resume /stop /checkpoint /logs /rollback [id] /steer /approve /dashboard /clear /exit"));
   }
 
   private onStatus(status: StatusMessage): void {
