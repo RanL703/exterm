@@ -91,6 +91,14 @@ export class TrainerApiClient {
     });
   }
 
+  async listVideos(): Promise<{ videos: Array<Record<string, unknown>> }> {
+    return this.request<{ videos: Array<Record<string, unknown>> }>("/api/v1/videos");
+  }
+
+  async getAgentLog(): Promise<{ logs: Array<Record<string, unknown>>; total: number }> {
+    return this.request<{ logs: Array<Record<string, unknown>>; total: number }>("/api/v1/agent/log");
+  }
+
   async confirmSteer(request: SteerRequest): Promise<SteerResponse> {
     return this.request<SteerResponse>("/api/v1/steer/confirm", {
       method: "POST",
