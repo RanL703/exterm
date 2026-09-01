@@ -76,6 +76,31 @@ class CommandMessage(BaseModel):
     payload: Optional[Dict[str, Any]] = None
 
 
+class QueueSteerRequest(BaseModel):
+    request_id: str
+    instruction: str
+    requested_at_timestep: int = 0
+
+
+class QueueSteerResponse(BaseModel):
+    request_id: str
+    state: Literal["queued", "duplicate", "rejected"]
+    queue_position: Optional[int] = None
+    message: str
+
+
+class SteeringWindow(BaseModel):
+    request_id: str
+    safe_point_timestep: int
+
+
+class AgentToolResult(BaseModel):
+    tool: str
+    ok: bool
+    result: Dict[str, Any] = Field(default_factory=dict)
+    error: Optional[str] = None
+
+
 class CheckpointInfo(BaseModel):
     checkpoint_id: str
     run_id: str
