@@ -19,7 +19,7 @@ export function parseSlashCommand(input: string): SlashCommand | null {
   const trimmed = input.trim();
   if (!trimmed.startsWith("/")) return null;
 
-  const tokens = trimmed.slice(1).trim().split(/\s+/).filter(Boolean);
+  const tokens = [...trimmed.slice(1).trim().matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map((match) => match[1] ?? match[2] ?? match[3]);
   if (tokens.length === 0) return { name: "help", args: [] };
 
   return { name: tokens[0].toLowerCase(), args: tokens.slice(1) };

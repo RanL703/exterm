@@ -5,6 +5,7 @@ import { initCommand } from "./commands/init.js";
 import { steerCommand } from "./commands/steer.js";
 import { rollbackCommand } from "./commands/rollback.js";
 import { dashboardCommand } from "./commands/dashboard.js";
+import { InteractiveSession } from "./session/session.js";
 
 const program = new Command();
 
@@ -12,6 +13,15 @@ program
   .name("exterm")
   .description("Terminal-native CLI to scaffold, train, and steer reinforcement learning agents")
   .version("0.1.0");
+
+program.action(async () => {
+  if (!process.stdin.isTTY) {
+    program.help();
+    return;
+  }
+  const host = process.env.EXTERM_HOST || "http://127.0.0.1:8765";
+  await new InteractiveSession({ host, token: process.env.EXTERM_TOKEN }).run();
+});
 
 program
   .command("init")
