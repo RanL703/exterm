@@ -23,6 +23,7 @@ export class InteractiveSession {
   private readonly commands: CommandRegistry;
   private rl: readline.Interface | null = null;
   private closed = false;
+  private commandQueue: Promise<void> = Promise.resolve();
   private readonly agent: AgentRuntime;
 
   constructor(private readonly options: InteractiveSessionOptions) {
@@ -57,7 +58,9 @@ export class InteractiveSession {
     this.write(pc.dim("  Type /help for commands. Describe a change in plain language."));
 
     this.rl = readline.createInterface({ input: this.input, output: this.output, terminal: true, prompt: pc.cyan("exterm> ") });
-    this.rl.on("line", (line) => { void this.handleLine(line); });
+    this.rl.on("line", (line) => {
+      this.commandQueue = this.commandQueue.then(() => this.handleLine(line));
+    });
     this.rl.on("close", () => this.close());
     this.rl.prompt();
   }
