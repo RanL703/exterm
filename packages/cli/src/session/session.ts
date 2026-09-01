@@ -4,6 +4,7 @@ import { TrainerApiClient } from "../client/api.js";
 import { TrainerWebSocketClient } from "../client/ws.js";
 import { AgentRuntime, OllamaAgentExecutor } from "../agent/runtime.js";
 import { createAgentTools } from "../agent/tools.js";
+import { listOllamaModels } from "../agent/ollama.js";
 import { RunConfig, StatusMessage, TelemetryEvent } from "../types.js";
 import { CommandRegistry } from "./commands.js";
 import { parseSlashCommand } from "./events.js";
@@ -25,13 +26,15 @@ export class InteractiveSession {
   private closed = false;
   private commandQueue: Promise<void> = Promise.resolve();
   private readonly agent: AgentRuntime;
+  private readonly ollamaBaseUrl = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
+  private agentModel = process.env.OLLAMA_MODEL || "qwen3.5:9b";
 
   constructor(private readonly options: InteractiveSessionOptions) {
     this.api = new TrainerApiClient(options.host, options.token);
     this.ws = new TrainerWebSocketClient(options.host, options.token);
     this.input = options.input ?? process.stdin;
     this.output = options.output ?? process.stdout;
-    this.agent = new AgentRuntime(createAgentTools(process.cwd(), this.api), (input, tools) => new OllamaAgentExecutor().execute(input, tools));
+    this.agent = new AgentRuntime(createAgentTools(process.cwd(), this.api), (input, tools) => new OllamaAgentExecutor(this.ollamaBaseUrl, this.agentModel).execute(input, tools));
     this.commands = new CommandRegistry({
       help: async () => this.help(),
       train: async (args) => this.train(args),
@@ -42,6 +45,7 @@ export class InteractiveSession {
       checkpoint: async () => this.checkpoint(),
       steer: async (args) => this.steer(args.join(" ")),
       approve: async (args) => this.approve(args[0]),
+      model: async (args) => this.model(args),
       dashboard: async () => this.write(`  dashboard  ${this.options.host.replace(/^http/i, "http").replace(/:8765$/, ":3000")}`),
       clear: async () => this.write("\x1b[2J\x1b[H"),
       exit: async () => this.close(),
@@ -118,8 +122,25 @@ export class InteractiveSession {
     this.write(pc.green(`  steering approved · checkpoint ${response.checkpoint_id}`));
   }
 
+  private async model(args: string[]): Promise<void> {
+    const models = await listOllamaModels(this.ollamaBaseUrl);
+    if (args.length === 0) {
+      this.write(`  ollama  ${this.ollamaBaseUrl}`);
+      if (models.length === 0) { this.write(pc.yellow("  no models found")); return; }
+      for (const [index, model] of models.entries()) this.write(`  ${index + 1}. ${model.name}${model.name === this.agentModel ? pc.green("  (selected)") : ""}`);
+      return;
+    }
+
+    const requested = args.join(" ");
+    const index = /^\d+$/.test(requested) ? Number(requested) - 1 : -1;
+    const selected = index >= 0 ? models[index]?.name : requested;
+    if (!selected || !models.some((candidate) => candidate.name === selected)) throw new Error(`model not found: ${requested}`);
+    this.agentModel = selected;
+    this.write(pc.green(`  model selected  ${selected}`));
+  }
+
   private async help(): Promise<void> {
-    this.write(pc.dim("  /train [--env CartPole-v1 --algo PPO --steps 50000] /status /pause /resume /stop /checkpoint /steer /approve /dashboard /clear /exit"));
+    this.write(pc.dim("  /train [--env CartPole-v1 --algo PPO --steps 50000] /model [name|number] /status /pause /resume /stop /checkpoint /steer /approve /dashboard /clear /exit"));
   }
 
   private onStatus(status: StatusMessage): void {
