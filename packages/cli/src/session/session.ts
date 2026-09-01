@@ -2,6 +2,8 @@ import readline from "node:readline";
 import pc from "picocolors";
 import { TrainerApiClient } from "../client/api.js";
 import { TrainerWebSocketClient } from "../client/ws.js";
+import { AgentRuntime, OllamaAgentExecutor } from "../agent/runtime.js";
+import { createAgentTools } from "../agent/tools.js";
 import { RunConfig, StatusMessage, TelemetryEvent } from "../types.js";
 import { CommandRegistry } from "./commands.js";
 import { parseSlashCommand } from "./events.js";
@@ -21,12 +23,14 @@ export class InteractiveSession {
   private readonly commands: CommandRegistry;
   private rl: readline.Interface | null = null;
   private closed = false;
+  private readonly agent: AgentRuntime;
 
   constructor(private readonly options: InteractiveSessionOptions) {
     this.api = new TrainerApiClient(options.host, options.token);
     this.ws = new TrainerWebSocketClient(options.host, options.token);
     this.input = options.input ?? process.stdin;
     this.output = options.output ?? process.stdout;
+    this.agent = new AgentRuntime(createAgentTools(process.cwd(), this.api), (input, tools) => new OllamaAgentExecutor().execute(input, tools));
     this.commands = new CommandRegistry({
       help: async () => this.help(),
       train: async (args) => this.train(args),
@@ -64,7 +68,11 @@ export class InteractiveSession {
     const command = parseSlashCommand(input);
     try {
       if (command) await this.commands.execute(command.name, command.args);
-      else this.write(pc.dim(`  agent  ${input}\n  Natural-language agent turns are enabled after the project tools are connected.`));
+      else {
+        this.write(pc.dim(`  agent  ${input}`));
+        const result = await this.agent.run(input);
+        this.write(result.message);
+      }
     } catch (error) {
       this.write(pc.red(`  error  ${error instanceof Error ? error.message : String(error)}`));
     }
