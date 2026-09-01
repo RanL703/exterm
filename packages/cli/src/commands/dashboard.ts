@@ -32,18 +32,16 @@ export async function dashboardCommand(options: DashboardOptions): Promise<void>
 
   // Build dashboard if needed
   const distDir = path.join(dashboardDir, "dist");
-  const { existsSync } = await import("node:fs");
-  if (!existsSync(distDir)) {
-    console.log(pc.dim("  Building dashboard..."));
-    await runCommand("npm", ["run", "build"], { cwd: dashboardDir });
-  }
-
-  // Set environment variables for the dashboard
   const env = {
     ...process.env,
     VITE_TRAINER_HOST: host,
     VITE_TRAINER_TOKEN: token || "",
   };
+  const { existsSync } = await import("node:fs");
+  if (!existsSync(distDir)) {
+    console.log(pc.dim("  Building dashboard..."));
+    await runCommand("npm", ["run", "build"], { cwd: dashboardDir, env });
+  }
 
   const child = spawn("npx", ["vite", "preview", "--port", port, "--host"], {
     cwd: dashboardDir,
@@ -64,9 +62,9 @@ export async function dashboardCommand(options: DashboardOptions): Promise<void>
   }
 }
 
-function runCommand(cmd: string, args: string[], options: { cwd: string }): Promise<void> {
+function runCommand(cmd: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv }): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd: options.cwd, stdio: "inherit", shell: true });
+    const child = spawn(cmd, args, { cwd: options.cwd, stdio: "inherit", shell: true, env: options.env });
     child.on("exit", (code) => {
       if (code === 0) resolve();
       else reject(new Error(`Command failed with code ${code}`));
