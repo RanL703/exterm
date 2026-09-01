@@ -84,6 +84,13 @@ export interface SteerRequest {
   checkpoint_id?: string;
 }
 
+export interface QueueSteerResponse {
+  request_id: string;
+  state: "queued" | "duplicate" | "rejected";
+  queue_position?: number | null;
+  message: string;
+}
+
 export interface SteerResponse {
   diff: string;
   applied: boolean;

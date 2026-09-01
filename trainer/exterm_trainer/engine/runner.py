@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
@@ -16,7 +17,11 @@ from ..protocol.messages import (
     CheckpointInfo,
     RunConfig,
     RunState,
+    QueueSteerRequest,
+    QueueSteerResponse,
     StatusResponse,
+    SteeringQueueItem,
+    SteeringWindow,
     TelemetryEvent,
 )
 from .callbacks import StreamingCallback
@@ -59,6 +64,10 @@ class TrainingRunner:
         self._current_reward_code = ""
         self._run_start_time = 0.0
         self._video_episode_trigger = None
+        self._steering_lock = threading.Lock()
+        self._steering_pending = deque(maxlen=20)
+        self._steering_ready = deque()
+        self._steering_items: Dict[str, SteeringQueueItem] = {}
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -70,6 +79,39 @@ class TrainingRunner:
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
         self._subscribers.discard(q)
+
+    def queue_steering(self, request: QueueSteerRequest) -> QueueSteerResponse:
+        with self._steering_lock:
+            if request.request_id in self._steering_items:
+                return QueueSteerResponse(request_id=request.request_id, state="duplicate", message="Steering request already queued")
+            if any(item.instruction == request.instruction for item in self._steering_pending):
+                return QueueSteerResponse(request_id=request.request_id, state="duplicate", message="An identical steering request is already queued")
+            if len(self._steering_pending) + len(self._steering_ready) >= 20:
+                return QueueSteerResponse(request_id=request.request_id, state="rejected", message="Steering queue is full")
+            self._steering_pending.append(request)
+            self._steering_items[request.request_id] = SteeringQueueItem(
+                request_id=request.request_id,
+                instruction=request.instruction,
+                requested_at_timestep=request.requested_at_timestep,
+                state="queued",
+            )
+            position = len(self._steering_pending)
+        self._broadcast({"type": "steering_queued", "request_id": request.request_id, "instruction": request.instruction, "requested_at_timestep": request.requested_at_timestep})
+        return QueueSteerResponse(request_id=request.request_id, state="queued", queue_position=position, message="Steering request queued")
+
+    def process_safe_point(self, timestep: int) -> None:
+        with self._steering_lock:
+            if not self._steering_pending:
+                return
+            request = self._steering_pending.popleft()
+            item = self._steering_items[request.request_id].model_copy(update={"state": "window_open", "safe_point_timestep": timestep})
+            self._steering_items[request.request_id] = item
+            self._steering_ready.append((request, timestep))
+        self._broadcast({"type": "steering_window_open", **SteeringWindow(request_id=request.request_id, safe_point_timestep=timestep).model_dump()})
+
+    def get_steering_queue(self) -> List[SteeringQueueItem]:
+        with self._steering_lock:
+            return list(self._steering_items.values())[-20:]
 
     def _broadcast(self, message: Any) -> None:
         if not self._loop or self._loop.is_closed():
@@ -335,6 +377,7 @@ class TrainingRunner:
                 emit_fn=self._emit_telemetry,
                 stop_event=self._stop_event,
                 pause_event=self._pause_event,
+                safe_point_fn=self.process_safe_point,
             )
 
             self._model.learn(total_timesteps=config.total_timesteps, callback=cb)

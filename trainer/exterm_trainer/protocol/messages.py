@@ -89,6 +89,18 @@ class QueueSteerResponse(BaseModel):
     message: str
 
 
+class SteeringQueueItem(BaseModel):
+    request_id: str
+    instruction: str
+    requested_at_timestep: int
+    state: Literal["queued", "window_open"]
+    safe_point_timestep: Optional[int] = None
+
+
+class SteeringQueueResponse(BaseModel):
+    items: List[SteeringQueueItem]
+
+
 class SteeringWindow(BaseModel):
     request_id: str
     safe_point_timestep: int

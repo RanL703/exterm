@@ -18,6 +18,7 @@ class StreamingCallback(BaseCallback):
         emit_fn: Callable[[TelemetryEvent], None],
         stop_event: threading.Event,
         pause_event: threading.Event,
+        safe_point_fn: Optional[Callable[[int], None]] = None,
         step_interval: int = 250,
         verbose: int = 0,
     ):
@@ -27,6 +28,7 @@ class StreamingCallback(BaseCallback):
         self.emit_fn = emit_fn
         self.stop_event = stop_event
         self.pause_event = pause_event
+        self.safe_point_fn = safe_point_fn
         self.step_interval = step_interval
 
         self.episode_count = 0
@@ -122,5 +124,8 @@ class StreamingCallback(BaseCallback):
             self.emit_fn(event)
             self._last_emit_step = current_step
             self._last_emit_time = current_time
+
+        if self.safe_point_fn is not None:
+            self.safe_point_fn(current_step)
 
         return True

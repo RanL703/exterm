@@ -95,9 +95,9 @@ export class InteractiveSession {
   private async steer(instruction: string): Promise<void> {
     if (!instruction) { this.write(pc.yellow("  usage  /steer <instruction>")); return; }
     this.write(pc.dim(`  steering  ${instruction}`));
-    const response = await this.api.steer({ instruction });
-    this.write(response.requires_confirmation ? pc.yellow(`  proposal ${response.checkpoint_id} needs approval`) : pc.green(`  steering applied · checkpoint ${response.checkpoint_id}`));
-    if (response.diff) this.write(response.diff);
+    const response = await this.api.queueSteer({ instruction });
+    if (response.state === "rejected") throw new Error(response.message);
+    this.write(pc.green(`  steering queued · request ${response.request_id} · position ${response.queue_position ?? "ready"}`));
   }
 
   private async help(): Promise<void> {

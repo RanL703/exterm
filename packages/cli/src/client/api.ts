@@ -84,6 +84,13 @@ export class TrainerApiClient {
     });
   }
 
+  async queueSteer(request: SteerRequest): Promise<import("../types.js").QueueSteerResponse> {
+    return this.request<import("../types.js").QueueSteerResponse>("/api/v1/steer/queue", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  }
+
   async confirmSteer(request: SteerRequest): Promise<SteerResponse> {
     return this.request<SteerResponse>("/api/v1/steer/confirm", {
       method: "POST",

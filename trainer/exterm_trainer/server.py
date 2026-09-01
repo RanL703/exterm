@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List, Optional
 
@@ -22,6 +23,8 @@ from .protocol.messages import (
     CheckpointInfo,
     CheckpointListResponse,
     CommandMessage,
+    QueueSteerRequest,
+    QueueSteerResponse,
     HyperparamSuggestion,
     RollbackRequest,
     RollbackResponse,
@@ -31,6 +34,7 @@ from .protocol.messages import (
     SteerRequest,
     SteerResponse,
     SteeringSuggestion,
+    SteeringQueueResponse,
     TrainingAnalysis,
     VideoInfo,
     VideoListResponse,
@@ -323,6 +327,21 @@ async def steer(request: SteerRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/v1/steer/queue", response_model=QueueSteerResponse, dependencies=[Depends(verify_token)])
+async def queue_steer(request: SteerRequest):
+    valid, error = validate_instruction(request.instruction)
+    if not valid:
+        raise HTTPException(status_code=400, detail=f"Instruction validation failed: {error}")
+    requested_at = runner.latest_telemetry.timesteps if runner.latest_telemetry else 0
+    request_id = request.checkpoint_id or str(uuid.uuid4())[:8]
+    return runner.queue_steering(QueueSteerRequest(request_id=request_id, instruction=request.instruction, requested_at_timestep=requested_at))
+
+
+@app.get("/api/v1/steer/queue", response_model=SteeringQueueResponse, dependencies=[Depends(verify_token)])
+async def get_steering_queue():
+    return SteeringQueueResponse(items=runner.get_steering_queue())
+
+
 @app.post("/api/v1/steer/confirm", response_model=SteerResponse, dependencies=[Depends(verify_token)])
 async def confirm_steer(request: SteerRequest):
     try:
@@ -537,6 +556,13 @@ async def websocket_endpoint(websocket: WebSocket):
                         runner.resume()
                     elif cmd.action == "stop":
                         runner.stop()
+                    elif cmd.action == "steer" and cmd.payload and cmd.payload.get("instruction"):
+                        requested_at = runner.latest_telemetry.timesteps if runner.latest_telemetry else 0
+                        runner.queue_steering(QueueSteerRequest(
+                            request_id=str(uuid.uuid4())[:8],
+                            instruction=cmd.payload["instruction"],
+                            requested_at_timestep=requested_at,
+                        ))
                 except Exception as e:
                     logger.warning(f"Invalid WS command received: {e}")
         except (WebSocketDisconnect, asyncio.CancelledError):
