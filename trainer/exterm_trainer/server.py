@@ -97,6 +97,7 @@ _analysis_call_times: List[float] = []
 _agent_action_log: List[AgentActionLog] = []
 _auto_steer_config = AutoSteerConfig()
 _auto_steer_action_times: List[float] = []
+_pending_steering_proposals: dict[str, dict] = {}
 
 
 def set_bearer_token(token: Optional[str]) -> None:
@@ -151,6 +152,42 @@ def log_agent_action(action: AgentActionLog) -> None:
 security = HTTPBearer(auto_error=False)
 
 
+async def process_steering_queue() -> None:
+    while True:
+        ready = runner.take_ready_steering()
+        if ready is None:
+            await asyncio.sleep(0.05)
+            continue
+
+        request, safe_point_timestep = ready
+        request_id = request.request_id
+        try:
+            checkpoint = runner.save_checkpoint()
+            current_code = runner._read_reward_code()
+            env_id = runner.current_config.env_id if runner.current_config else "CartPole-v1"
+            algorithm = runner.current_config.algorithm if runner.current_config else "PPO"
+            result = await run_steering(current_code, request.instruction, env_id, algorithm)
+            new_code = result.get("new_code", current_code)
+            diff = result.get("diff", "")
+            requires_confirmation = result.get("requires_confirmation", False)
+            if requires_confirmation:
+                _pending_steering_proposals[request_id] = {"request": request, "new_code": new_code, "diff": diff, "checkpoint_id": checkpoint.checkpoint_id, "safe_point_timestep": safe_point_timestep}
+                item = runner.update_steering_item(request_id, state="pending", checkpoint_id=checkpoint.checkpoint_id, diff=diff, message="Change requires confirmation")
+                runner._broadcast({"type": "steering_pending", "request_id": request_id, "checkpoint_id": checkpoint.checkpoint_id, "safe_point_timestep": safe_point_timestep, "diff": diff})
+                log_agent_action(AgentActionLog(timestamp=time.time(), action_type="steer", instruction=request.instruction, applied=False, requires_confirmation=True, checkpoint_id=checkpoint.checkpoint_id, diff=diff, metadata={"safe_point_timestep": safe_point_timestep}))
+            else:
+                runner.apply_steering(new_code)
+                item = runner.update_steering_item(request_id, state="applied", checkpoint_id=checkpoint.checkpoint_id, diff=diff, message="Steering applied successfully")
+                runner._broadcast({"type": "steering_applied", "request_id": request_id, "checkpoint_id": checkpoint.checkpoint_id, "safe_point_timestep": safe_point_timestep, "diff": diff})
+                log_agent_action(AgentActionLog(timestamp=time.time(), action_type="steer", instruction=request.instruction, applied=True, requires_confirmation=False, checkpoint_id=checkpoint.checkpoint_id, diff=diff, metadata={"safe_point_timestep": safe_point_timestep}))
+                runner.resume_after_steering()
+        except Exception as error:
+            runner.update_steering_item(request_id, state="failed", message=str(error))
+            runner._broadcast({"type": "steering_failed", "request_id": request_id, "safe_point_timestep": safe_point_timestep, "message": str(error)})
+            runner.resume_after_steering()
+        runner._broadcast({"type": "status", **runner.get_status().model_dump()})
+
+
 def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> None:
     """Verify bearer token if one is configured."""
     if BEARER_TOKEN is None:
@@ -167,9 +204,13 @@ def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(s
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     loop = asyncio.get_running_loop()
     runner.set_event_loop(loop)
+    worker = asyncio.create_task(process_steering_queue())
     logger.info("exterm-trainer initialized")
-    yield
-    runner.stop()
+    try:
+        yield
+    finally:
+        worker.cancel()
+        runner.stop()
 
 
 app = FastAPI(title="exterm-trainer", version="0.1.0", lifespan=lifespan)
@@ -340,6 +381,24 @@ async def queue_steer(request: SteerRequest):
 @app.get("/api/v1/steer/queue", response_model=SteeringQueueResponse, dependencies=[Depends(verify_token)])
 async def get_steering_queue():
     return SteeringQueueResponse(items=runner.get_steering_queue())
+
+
+@app.post("/api/v1/steer/queue/{request_id}/approve", response_model=SteerResponse, dependencies=[Depends(verify_token)])
+async def approve_queued_steer(request_id: str):
+    proposal = _pending_steering_proposals.pop(request_id, None)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail=f"Steering proposal {request_id} not found")
+    try:
+        runner.apply_steering(proposal["new_code"])
+        runner.update_steering_item(request_id, state="applied", message="Steering confirmed and applied")
+        runner.resume_after_steering()
+        runner._broadcast({"type": "steering_applied", "request_id": request_id, "checkpoint_id": proposal["checkpoint_id"], "safe_point_timestep": proposal["safe_point_timestep"], "diff": proposal["diff"]})
+        runner._broadcast({"type": "status", **runner.get_status().model_dump()})
+        log_agent_action(AgentActionLog(timestamp=time.time(), action_type="steer", instruction=proposal["request"].instruction, applied=True, requires_confirmation=False, checkpoint_id=proposal["checkpoint_id"], diff=proposal["diff"], metadata={"safe_point_timestep": proposal["safe_point_timestep"], "confirmed": True}))
+        return SteerResponse(diff=proposal["diff"], applied=True, requires_confirmation=False, checkpoint_id=proposal["checkpoint_id"], message="Steering confirmed and applied")
+    except Exception as error:
+        runner.resume_after_steering()
+        raise HTTPException(status_code=500, detail=str(error))
 
 
 @app.post("/api/v1/steer/confirm", response_model=SteerResponse, dependencies=[Depends(verify_token)])

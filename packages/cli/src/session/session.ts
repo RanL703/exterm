@@ -36,6 +36,7 @@ export class InteractiveSession {
       stop: async () => this.control("stop"),
       checkpoint: async () => this.checkpoint(),
       steer: async (args) => this.steer(args.join(" ")),
+      approve: async (args) => this.approve(args[0]),
       dashboard: async () => this.write(`  dashboard  ${this.options.host.replace(/^http/i, "http").replace(/:8765$/, ":3000")}`),
       clear: async () => this.write("\x1b[2J\x1b[H"),
       exit: async () => this.close(),
@@ -100,8 +101,14 @@ export class InteractiveSession {
     this.write(pc.green(`  steering queued · request ${response.request_id} · position ${response.queue_position ?? "ready"}`));
   }
 
+  private async approve(requestId?: string): Promise<void> {
+    if (!requestId) { this.write(pc.yellow("  usage  /approve <request-id>")); return; }
+    const response = await this.api.approveQueuedSteer(requestId);
+    this.write(pc.green(`  steering approved · checkpoint ${response.checkpoint_id}`));
+  }
+
   private async help(): Promise<void> {
-    this.write(pc.dim("  /train [--env CartPole-v1 --algo PPO --steps 50000] /status /pause /resume /stop /checkpoint /steer /dashboard /clear /exit"));
+    this.write(pc.dim("  /train [--env CartPole-v1 --algo PPO --steps 50000] /status /pause /resume /stop /checkpoint /steer /approve /dashboard /clear /exit"));
   }
 
   private onStatus(status: StatusMessage): void {

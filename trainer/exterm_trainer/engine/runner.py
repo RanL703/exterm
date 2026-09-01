@@ -104,6 +104,8 @@ class TrainingRunner:
             if not self._steering_pending:
                 return
             request = self._steering_pending.popleft()
+            self._pause_event.set()
+            self.state = RunState.PAUSED
             item = self._steering_items[request.request_id].model_copy(update={"state": "window_open", "safe_point_timestep": timestep})
             self._steering_items[request.request_id] = item
             self._steering_ready.append((request, timestep))
@@ -112,6 +114,24 @@ class TrainingRunner:
     def get_steering_queue(self) -> List[SteeringQueueItem]:
         with self._steering_lock:
             return list(self._steering_items.values())[-20:]
+
+    def take_ready_steering(self):
+        with self._steering_lock:
+            return self._steering_ready.popleft() if self._steering_ready else None
+
+    def update_steering_item(self, request_id: str, **updates: Any) -> Optional[SteeringQueueItem]:
+        with self._steering_lock:
+            item = self._steering_items.get(request_id)
+            if item is None:
+                return None
+            updated = item.model_copy(update=updates)
+            self._steering_items[request_id] = updated
+            return updated
+
+    def resume_after_steering(self) -> None:
+        self._pause_event.clear()
+        if self.state == RunState.PAUSED:
+            self.state = RunState.TRAINING
 
     def _broadcast(self, message: Any) -> None:
         if not self._loop or self._loop.is_closed():

@@ -93,8 +93,11 @@ class SteeringQueueItem(BaseModel):
     request_id: str
     instruction: str
     requested_at_timestep: int
-    state: Literal["queued", "window_open"]
+    state: Literal["queued", "window_open", "pending", "applied", "failed"]
     safe_point_timestep: Optional[int] = None
+    checkpoint_id: Optional[str] = None
+    diff: Optional[str] = None
+    message: Optional[str] = None
 
 
 class SteeringQueueResponse(BaseModel):

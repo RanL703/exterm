@@ -91,6 +91,10 @@ export class TrainerApiClient {
     });
   }
 
+  async approveQueuedSteer(requestId: string): Promise<SteerResponse> {
+    return this.request<SteerResponse>(`/api/v1/steer/queue/${requestId}/approve`, { method: "POST" });
+  }
+
   async listVideos(): Promise<{ videos: Array<Record<string, unknown>> }> {
     return this.request<{ videos: Array<Record<string, unknown>> }>("/api/v1/videos");
   }

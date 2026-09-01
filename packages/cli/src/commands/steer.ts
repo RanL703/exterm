@@ -46,31 +46,15 @@ export async function steerCommand(options: SteerOptions): Promise<void> {
     console.log(pc.bold(pc.cyan("\n  exterm")) + pc.dim(" - Applying steering instruction..."));
     console.log(pc.dim(`  Instruction: "${instruction}"`));
 
-    const response = await apiClient.steer({
+    const response = await apiClient.queueSteer({
       instruction,
       checkpoint_id: checkpointId,
     });
 
-    if (response.requires_confirmation) {
-      console.log(pc.yellow("\n  ? This change requires confirmation due to risk level."));
-      console.log(pc.dim(`  Checkpoint created: ${response.checkpoint_id}`));
-      console.log(pc.bold("\n  Proposed diff:"));
-      console.log(response.diff);
-      console.log();
-      console.log(pc.bold("  To confirm and apply:"));
-      console.log(pc.cyan(`  exterm steer --confirm --checkpoint ${response.checkpoint_id} "${instruction}"`));
-      console.log();
-      return;
-    }
-
-    console.log(pc.green("\n  ? Steering applied successfully!"));
-    console.log(pc.dim(`  Checkpoint: ${response.checkpoint_id}`));
-    console.log(pc.dim(`  Message: ${response.message}`));
-    if (response.diff) {
-      console.log(pc.bold("\n  Applied diff:"));
-      console.log(response.diff);
-    }
-    console.log();
+    if (response.state === "rejected") throw new Error(response.message);
+    console.log(pc.green(`\n  ? Steering queued: ${response.request_id}`));
+    console.log(pc.dim(`  Position: ${response.queue_position ?? "ready"}`));
+    console.log(pc.dim(`  Message: ${response.message}\n`));
   } catch (err: any) {
     console.error(pc.red(`\n  ? Error: ${err.message || err}\n`));
     process.exit(1);
