@@ -6,6 +6,7 @@ import { steerCommand } from "./commands/steer.js";
 import { rollbackCommand } from "./commands/rollback.js";
 import { dashboardCommand } from "./commands/dashboard.js";
 import { InteractiveSession } from "./session/session.js";
+import { mcpCommand } from "./commands/mcp.js";
 
 const program = new Command();
 
@@ -77,5 +78,10 @@ program
   .option("--no-open", "Do not open browser automatically")
   .option("-t, --token <token>", "Bearer token for authentication (remote mode)")
   .action(dashboardCommand);
+
+program
+  .command("mcp")
+  .description("Run the bundled exterm MCP server over stdio")
+  .action(mcpCommand);
 
 program.parse(process.argv);
