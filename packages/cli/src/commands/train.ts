@@ -218,29 +218,13 @@ export async function trainCommand(options: TrainOptions): Promise<void> {
         // Steer with natural language instruction
         console.log(pc.dim("  Applying steering..."));
         try {
-          const response = await apiClient.steer({
+          const response = await apiClient.queueSteer({
             instruction,
-            checkpoint_id: undefined,
           });
-
-          if (response.requires_confirmation) {
-            console.log(pc.yellow("\n  ? This change requires confirmation due to risk level."));
-            console.log(pc.dim(`  Checkpoint created: ${response.checkpoint_id}`));
-            console.log(pc.bold("\n  Proposed diff:"));
-            console.log(response.diff);
-            console.log();
-            console.log(pc.bold("  To confirm and apply:"));
-            console.log(pc.cyan(`  exterm steer --confirm --checkpoint ${response.checkpoint_id} "${instruction}"`));
-            console.log();
-          } else {
-            console.log(pc.green("\n  ? Steering applied successfully!"));
-            console.log(pc.dim(`  Checkpoint: ${response.checkpoint_id}`));
-            if (response.diff) {
-              console.log(pc.bold("  Applied diff:"));
-              console.log(response.diff);
-            }
-            console.log();
-          }
+          if (response.state === "rejected") throw new Error(response.message);
+          console.log(pc.green(`\n  ? Steering queued: ${response.request_id}`));
+          console.log(pc.dim(`  Position: ${response.queue_position ?? "ready"}`));
+          console.log(pc.dim("  It will be proposed at the next safe trainer boundary.\n"));
         } catch (e: any) {
           console.log(pc.red(`\n  ? Steering failed: ${e.message}`));
         }
