@@ -7,6 +7,7 @@ import { rollbackCommand } from "./commands/rollback.js";
 import { dashboardCommand } from "./commands/dashboard.js";
 import { InteractiveSession } from "./session/session.js";
 import { mcpCommand } from "./commands/mcp.js";
+import { ensureTrainerRunning } from "./client/spawner.js";
 
 const program = new Command();
 
@@ -21,7 +22,22 @@ program.action(async () => {
     return;
   }
   const host = process.env.EXTERM_HOST || "http://127.0.0.1:8765";
-  await new InteractiveSession({ host, token: process.env.EXTERM_TOKEN }).run();
+  try {
+    const trainer = await ensureTrainerRunning(host, { autoSpawn: true, verbose: true });
+    process.once("exit", trainer.cleanup);
+    await new InteractiveSession({ host, token: process.env.EXTERM_TOKEN }).run();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`\n  exterm: ${message}`);
+    if (message.includes("403") || message.includes("401")) {
+      console.error("  The trainer is running, but EXTERM_TOKEN does not match its bearer token.");
+      console.error("  Copy the token printed by the trainer into: export EXTERM_TOKEN=<trainer-token>");
+      process.exitCode = 1;
+      return;
+    }
+    console.error("  Start it with: exterm serve (or `uv run --directory trainer python -m exterm_trainer`)");
+    process.exitCode = 1;
+  }
 });
 
 program

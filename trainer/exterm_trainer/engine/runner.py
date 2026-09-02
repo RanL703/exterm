@@ -225,9 +225,14 @@ class TrainingRunner:
         if checkpoint:
             self.save_checkpoint()
 
-        # Update reward code
+        # Keep source and live wrapper aligned if hot reload fails.
+        previous_code = self._read_reward_code()
         self._write_reward_code(new_reward_code)
-        self._apply_live_reward_code(new_reward_code)
+        try:
+            self._apply_live_reward_code(new_reward_code)
+        except Exception:
+            self._write_reward_code(previous_code)
+            raise
         self._current_reward_code = new_reward_code
 
         # Update hyperparameters if provided
@@ -348,11 +353,16 @@ class TrainingRunner:
         if not model_path.exists():
             raise FileNotFoundError(f"Checkpoint model file not found: {model_path}")
 
-        # Load model weights
-        self._model = self._model.__class__.load(str(model_path), env=self._env)
-
-        # Restore reward code
-        self._write_reward_code(checkpoint.reward_code)
+        # Publish the restored model only after source restoration succeeds.
+        restored_model = self._model.__class__.load(str(model_path), env=self._env)
+        previous_code = self._read_reward_code()
+        try:
+            self._write_reward_code(checkpoint.reward_code)
+        except Exception:
+            self._write_reward_code(previous_code)
+            raise
+        self._model = restored_model
+        self._apply_live_reward_code(checkpoint.reward_code)
         self._current_reward_code = checkpoint.reward_code
 
         logger.info(f"Loaded checkpoint {checkpoint_id}")

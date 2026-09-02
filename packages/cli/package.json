@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "exterm",
   "version": "0.1.0",
   "description": "Terminal-native CLI to scaffold, train, and steer reinforcement learning agents",
@@ -12,6 +12,7 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "start": "tsx src/index.ts",
+    "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

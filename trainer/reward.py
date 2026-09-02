@@ -31,14 +31,15 @@ class RewardShapingWrapper(Wrapper):
         info: dict,
     ) -> float:
         # ----- Edit below this line -----
-        # ----- Edit below this line -----
-        action_penalty = 0.0
-        if hasattr(self, 'prev_action') and self.prev_action is not None:
-            if action != self.prev_action:
-                action_penalty = -0.1  # Penalty for switching actions too frequently
-        
-        self.prev_action = action
-        return original_reward + action_penalty
+        # Penalize hard landings by checking vertical velocity when landing
+        if terminated or truncated:
+            # If landed successfully (y close to ground)
+            if obs[1] <= 0.2:  # Lander is on ground
+                # Add penalty for high vertical velocity at impact
+                vertical_velocity = obs[2]
+                hard_landing_penalty = -np.abs(vertical_velocity) * 5.0
+                return original_reward + hard_landing_penalty
+        return original_reward
         # --------------------------------
         # --------------------------------
         # --------------------------------

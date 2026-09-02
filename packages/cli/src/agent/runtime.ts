@@ -4,6 +4,7 @@ export interface AgentTurnResult {
   message: string;
   tool?: string;
   result?: unknown;
+  diffs?: string[];
 }
 
 export type AgentExecutor = (input: string, tools: AgentTool[]) => Promise<AgentTurnResult>;
@@ -12,6 +13,7 @@ export class OllamaAgentExecutor {
   constructor(private readonly baseUrl = process.env.OLLAMA_BASE_URL || "http://localhost:11434", private readonly model = process.env.OLLAMA_MODEL || "qwen3.5:9b") {}
 
   async execute(input: string, tools: AgentTool[]): Promise<AgentTurnResult> {
+    const diffs: string[] = [];
     const messages: Array<Record<string, unknown>> = [
       { role: "system", content: "You are exterm, an RL coding agent. Inspect project files before editing. Explain planned mutations, use project_apply_patch for changes, validate code before training, and use trainer_queue_steer for runtime directives. Never invent telemetry or claim a mutation succeeded unless the tool returned success. Do not request shell access." },
       { role: "user", content: input },
@@ -25,7 +27,7 @@ export class OllamaAgentExecutor {
       const message = payload.message;
       if (!message) throw new Error("Ollama returned no message");
       messages.push(message as Record<string, unknown>);
-      if (!message.tool_calls?.length) return { message: message.content || "Agent completed without a text response." };
+      if (!message.tool_calls?.length) return { message: message.content || "Agent completed without a text response.", diffs };
 
       for (const call of message.tool_calls) {
         const tool = tools.find((candidate) => candidate.name === call.function.name);
@@ -33,6 +35,7 @@ export class OllamaAgentExecutor {
         const argumentsValue = typeof call.function.arguments === "string" ? JSON.parse(call.function.arguments) : call.function.arguments;
         let result: unknown;
         try { result = await tool.execute(argumentsValue); } catch (error) { result = { ok: false, error: error instanceof Error ? error.message : String(error) }; }
+        if (tool.name === "project_apply_patch" && (result as { ok?: boolean }).ok && typeof argumentsValue === "object" && argumentsValue && "patch" in argumentsValue && typeof argumentsValue.patch === "string") diffs.push(argumentsValue.patch);
         messages.push({ role: "tool", content: JSON.stringify(result) });
       }
     }

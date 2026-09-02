@@ -95,12 +95,23 @@ export class TrainerApiClient {
     return this.request<SteerResponse>(`/api/v1/steer/queue/${requestId}/approve`, { method: "POST" });
   }
 
+  async listSteeringQueue(): Promise<{ items: Array<Record<string, unknown>> }> {
+    return this.request<{ items: Array<Record<string, unknown>> }>("/api/v1/steer/queue");
+  }
+
   async listVideos(): Promise<{ videos: Array<Record<string, unknown>> }> {
     return this.request<{ videos: Array<Record<string, unknown>> }>("/api/v1/videos");
   }
 
   async getAgentLog(): Promise<{ logs: Array<Record<string, unknown>>; total: number }> {
     return this.request<{ logs: Array<Record<string, unknown>>; total: number }>("/api/v1/agent/log");
+  }
+
+  async agentSession(sessionId: string, input: string, model?: string): Promise<{ session_id: string; route: string; message: string }> {
+    return this.request<{ session_id: string; route: string; message: string }>("/api/v1/agent/session", {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessionId, input, model }),
+    });
   }
 
   async confirmSteer(request: SteerRequest): Promise<SteerResponse> {

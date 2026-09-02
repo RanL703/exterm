@@ -89,7 +89,7 @@ The dashboard reads the same trainer status, telemetry, checkpoints, replay vide
 
 ### Interactive agent session
 
-Run `exterm` with a TTY to open the persistent session. It streams trainer telemetry while accepting slash commands and natural-language requests through Ollama:
+Run `exterm` with a TTY to open the persistent session. Training telemetry stays in the dashboard while the CLI reports commands, steering lifecycle events, diffs, and run state:
 
 ```bash
 export OLLAMA_BASE_URL=http://localhost:11434
@@ -106,14 +106,18 @@ Useful commands:
 /model 2               # select a listed model
 /train --steps 10000   # start a run
 /steer favor stable    # queue a directive at the next safe point
+/edit <request>        # inspect and patch project files through Ollama
 /logs                  # show agent actions
 /rollback              # list checkpoints
 /rollback <checkpoint> # restore code and weights
+/skills                # list built-in/project presets
+/dashboard             # launch or reuse the dashboard
+/mcp                   # report interactive MCP status
 /help
 /exit
 ```
 
-Natural-language input is handled by the selected Ollama model. `/model` reads `OLLAMA_BASE_URL/api/tags`; use `/model <number>` or `/model <name>` to change the model for later agent turns. Project edits are bounded to the current project, validated before training, and runtime steering is applied only at trainer safe points.
+Natural-language input is routed by a LangGraph session in the trainer: steering instructions enter the safe-point queue, project-scaffolding requests point to `/init`, and questions use bounded trainer status/control tools. Use `/edit <request>` when you want the local coding agent to inspect and patch files directly. Successful patches are printed as unified diffs. `/model` reads `OLLAMA_BASE_URL/api/tags`; use `/model <number>` or `/model <name>` to change the model for later agent turns. Project edits are bounded to the current project, and runtime steering is validated and applied only at trainer safe points.
 
 Direct command equivalents are available without an interactive session:
 
@@ -202,7 +206,7 @@ Check Ollama and its tags endpoint:
 curl "$OLLAMA_BASE_URL/api/tags"
 ```
 
-The selected model must support the Ollama chat/tool-calling flow for natural-language project edits. Slash commands such as `/status` and `/train` do not require Ollama.
+The selected model must support the Ollama chat/tool-calling flow for natural-language project edits and trainer questions. Slash commands such as `/status` and `/train` do not require Ollama.
 
 ### Steering is still queued
 
@@ -223,7 +227,16 @@ node ./packages/cli/bin/exterm.js dashboard --no-open
 ```bash
 npm install
 npm run build
+npm run typecheck --workspace=exterm
+npm test --workspace=exterm
 cd trainer && uv pip install -e ".[dev]" && pytest -q
 ```
 
-The trainer’s legacy `tests/test_server.py` health test currently hangs under the installed TestClient stack; investigate that harness issue separately if the full trainer suite does not return. The CLI build and focused session/model tests can be run with the Node test runner after compiling the test files to a temporary directory.
+The focused steering suite is also useful for fast local checks:
+
+```bash
+cd trainer
+./.venv/bin/python -m pytest tests/test_agent_session.py tests/test_steering_validation.py tests/test_steering_agent.py tests/test_checkpoint_rollback.py tests/test_steering_process.py -q
+```
+
+The three real-process tests skip only when the operating system denies test-created sockets. In a normal development environment they exercise a real trainer subprocess; the remaining trainer tests cover validation, queueing, sessions, and rollback.

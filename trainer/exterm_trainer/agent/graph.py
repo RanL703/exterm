@@ -37,11 +37,11 @@ class AgentState(TypedDict):
 
 
 # Initialize LLM
-def get_llm() -> ChatOllama:
+def get_llm(model: Optional[str] = None) -> ChatOllama:
     """Get configured Ollama LLM."""
     import os
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-    model = os.environ.get("OLLAMA_MODEL", "qwen3.5:9b")
+    model = model or os.environ.get("OLLAMA_MODEL", "qwen3.5:9b")
     return ChatOllama(
         base_url=base_url,
         model=model,

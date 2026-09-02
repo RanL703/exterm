@@ -1,10 +1,11 @@
 import { TrainerApiClient } from "./client/api.js";
 import pc from "picocolors";
+import type { RunState } from "./types.js";
 
 export interface TrainerInstance {
   host: string;
   token?: string;
-  status?: "running" | "training" | "idle";
+  status?: RunState;
   runId?: string;
 }
 
@@ -21,7 +22,7 @@ export async function detectLocalTrainers(token?: string): Promise<TrainerInstan
       const isHealthy = await client.checkHealth();
       if (isHealthy) {
         console.log(pc.green(`  Found healthy trainer at ${host}`));
-        let status = "idle";
+        let status: TrainerInstance["status"] = "idle";
         let runId: string | undefined;
         try {
           const statusRes = await client.getStatus();

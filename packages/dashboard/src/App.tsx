@@ -45,7 +45,7 @@ function App() {
     const ws = new WebSocket(wsUrl); wsRef.current = ws;
     ws.onopen = () => { setConnected(true); void fetchStatus(); void fetchCheckpoints(); };
     ws.onmessage = (event) => { try { const message = JSON.parse(event.data); if (message.type === "telemetry") setTelemetryHistory((previous) => [...previous.slice(-999), message]); if (message.type === "status") setStatus(message); } catch { /* Ignore malformed trainer messages. */ } };
-    ws.onclose = () => { setConnected(false); reconnectTimeoutRef.current = setTimeout(connect, 3000); };
+    ws.onclose = (event) => { setConnected(false); if (event.code !== 1008) reconnectTimeoutRef.current = setTimeout(connect, 3000); };
   }, [fetchCheckpoints, fetchStatus, host, token]);
   const disconnect = useCallback(() => { if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current); wsRef.current?.close(); wsRef.current = null; setConnected(false); }, []);
   useEffect(() => { connect(); return disconnect; }, [connect, disconnect]);

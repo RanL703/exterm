@@ -93,7 +93,7 @@ class SteeringQueueItem(BaseModel):
     request_id: str
     instruction: str
     requested_at_timestep: int
-    state: Literal["queued", "window_open", "pending", "applied", "failed"]
+    state: Literal["queued", "window_open", "pending", "applied", "failed", "rolled_back"]
     safe_point_timestep: Optional[int] = None
     checkpoint_id: Optional[str] = None
     diff: Optional[str] = None
@@ -116,6 +116,18 @@ class AgentToolResult(BaseModel):
     ok: bool
     result: Dict[str, Any] = Field(default_factory=dict)
     error: Optional[str] = None
+
+
+class AgentSessionRequest(BaseModel):
+    session_id: str
+    input: str
+    model: Optional[str] = None
+
+
+class AgentSessionResponse(BaseModel):
+    session_id: str
+    route: Literal["steering", "scaffolding", "question"]
+    message: str
 
 
 class CheckpointInfo(BaseModel):
@@ -149,7 +161,8 @@ class SteerResponse(BaseModel):
 
 
 class RollbackRequest(BaseModel):
-    checkpoint_id: str
+    checkpoint_id: Optional[str] = None
+    event_id: Optional[str] = None
 
 
 class RollbackResponse(BaseModel):
@@ -208,6 +221,7 @@ class AutoSteerStatus(BaseModel):
 class AgentActionLog(BaseModel):
     """Audit log entry for agent actions."""
     timestamp: float
+    event_id: Optional[str] = None
     action_type: Literal["analyze", "steer", "hyperparam_suggest", "auto_steer"]
     instruction: Optional[str]
     applied: bool

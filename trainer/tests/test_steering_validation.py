@@ -28,6 +28,11 @@ def test_valid_reward_edit_runs_against_cached_samples():
     assert result.risk_level == "auto"
 
 
+def test_safe_builtin_constructor_is_allowed():
+    result = validate_reward_edit(BASE, edit("return original_reward - dict(penalty=0.1)[\"penalty\"]"))
+    assert result.ok
+
+
 @pytest.mark.parametrize("body, message", [
     ("return original_reward + missing_value", "undefined name"),
     ("return (", "syntax"),

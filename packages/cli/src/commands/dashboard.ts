@@ -31,17 +31,13 @@ export async function dashboardCommand(options: DashboardOptions): Promise<void>
   if (token) await setLastToken(token);
 
   // Build dashboard if needed
-  const distDir = path.join(dashboardDir, "dist");
   const env = {
     ...process.env,
     VITE_TRAINER_HOST: host,
     VITE_TRAINER_TOKEN: token || "",
   };
-  const { existsSync } = await import("node:fs");
-  if (!existsSync(distDir)) {
-    console.log(pc.dim("  Building dashboard..."));
-    await runCommand("npm", ["run", "build"], { cwd: dashboardDir, env });
-  }
+  console.log(pc.dim("  Building dashboard with the current trainer connection..."));
+  await runCommand("npm", ["run", "build"], { cwd: dashboardDir, env });
 
   const child = spawn("npx", ["vite", "preview", "--port", port, "--host"], {
     cwd: dashboardDir,

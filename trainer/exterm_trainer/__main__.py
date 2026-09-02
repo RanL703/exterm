@@ -1,5 +1,6 @@
 import argparse
 import ipaddress
+import os
 import secrets
 import ssl
 import uvicorn
@@ -61,7 +62,7 @@ def main():
     args = parser.parse_args()
 
     # Generate token if not provided
-    token = args.token or secrets.token_urlsafe(32)
+    token = args.token or os.environ.get("EXTERM_BEARER_TOKEN") or os.environ.get("EXTERM_TOKEN") or secrets.token_urlsafe(32)
 
     # Set bearer token for authentication
     from .server import set_bearer_token

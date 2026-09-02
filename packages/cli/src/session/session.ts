@@ -2,12 +2,14 @@ import readline from "node:readline";
 import pc from "picocolors";
 import { TrainerApiClient } from "../client/api.js";
 import { TrainerWebSocketClient } from "../client/ws.js";
+import { listOllamaModels } from "../agent/ollama.js";
 import { AgentRuntime, OllamaAgentExecutor } from "../agent/runtime.js";
 import { createAgentTools } from "../agent/tools.js";
-import { listOllamaModels } from "../agent/ollama.js";
-import { RunConfig, StatusMessage, TelemetryEvent } from "../types.js";
+import { RunConfig, StatusMessage } from "../types.js";
 import { CommandRegistry } from "./commands.js";
 import { parseSlashCommand } from "./events.js";
+import { applySkill, loadSkills } from "./skills.js";
+import { launchDashboard } from "./dashboard.js";
 
 export interface InteractiveSessionOptions {
   host: string;
@@ -24,17 +26,17 @@ export class InteractiveSession {
   private readonly commands: CommandRegistry;
   private rl: readline.Interface | null = null;
   private closed = false;
+  private lastTerminalRunState = "";
   private commandQueue: Promise<void> = Promise.resolve();
-  private readonly agent: AgentRuntime;
   private readonly ollamaBaseUrl = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
   private agentModel = process.env.OLLAMA_MODEL || "qwen3.5:9b";
+  private readonly sessionId = Math.random().toString(36).slice(2, 10);
 
   constructor(private readonly options: InteractiveSessionOptions) {
     this.api = new TrainerApiClient(options.host, options.token);
     this.ws = new TrainerWebSocketClient(options.host, options.token);
     this.input = options.input ?? process.stdin;
     this.output = options.output ?? process.stdout;
-    this.agent = new AgentRuntime(createAgentTools(process.cwd(), this.api), (input, tools) => new OllamaAgentExecutor(this.ollamaBaseUrl, this.agentModel).execute(input, tools));
     this.commands = new CommandRegistry({
       help: async () => this.help(),
       train: async (args) => this.train(args),
@@ -48,7 +50,10 @@ export class InteractiveSession {
       steer: async (args) => this.steer(args.join(" ")),
       approve: async (args) => this.approve(args[0]),
       model: async (args) => this.model(args),
-      dashboard: async () => this.write(`  dashboard  ${this.options.host.replace(/^http/i, "http").replace(/:8765$/, ":3000")}`),
+      skills: async (args) => this.skills(args),
+      mcp: async () => this.write(pc.yellow("  MCP is not available as an interactive session tool yet; use `exterm mcp` for the bundled stdio server.")),
+      dashboard: async (args) => this.dashboard(args),
+      edit: async (args) => this.edit(args.join(" ")),
       clear: async () => this.write("\x1b[2J\x1b[H"),
       exit: async () => this.close(),
       quit: async () => this.close(),
@@ -58,7 +63,7 @@ export class InteractiveSession {
   async run(): Promise<void> {
     await this.ws.connect();
     this.ws.onStatus((status) => this.onStatus(status));
-    this.ws.onTelemetry((event) => this.onTelemetry(event));
+    this.ws.onMessage((message) => this.onTrainerMessage(message as { type: string; request_id?: string; message?: string; checkpoint_id?: string; diff?: string }));
     this.write(pc.bold(pc.cyan("\n  exterm")) + pc.dim(" · RL coding agent"));
     this.write(pc.dim(`  trainer  ${this.options.host}`));
     this.write(pc.dim("  Type /help for commands. Describe a change in plain language."));
@@ -77,9 +82,12 @@ export class InteractiveSession {
     const command = parseSlashCommand(input);
     try {
       if (command) await this.commands.execute(command.name, command.args);
-      else {
+      else if (looksLikeProjectEdit(input)) {
+        await this.edit(input);
+      } else {
         this.write(pc.dim(`  agent  ${input}`));
-        const result = await this.agent.run(input);
+        const result = await this.api.agentSession(this.sessionId, input, this.agentModel);
+        this.write(pc.dim(`  ${result.route}`));
         this.write(result.message);
       }
     } catch (error) {
@@ -90,7 +98,12 @@ export class InteractiveSession {
 
   private async status(): Promise<void> {
     const status = await this.api.getStatus();
+    this.write(pc.dim(`  trainer  ${this.options.host}`));
     this.write(`  ${status.state} · ${status.timesteps.toLocaleString()}/${status.total_timesteps.toLocaleString()} steps · ${status.episodes.toLocaleString()} episodes · ${status.fps} fps`);
+    const queue = await this.api.listSteeringQueue();
+    for (const event of queue.items.slice(-3)) {
+      this.write(pc.dim(`  steering  ${String(event.request_id)} · ${String(event.state)}${event.safe_point_timestep == null ? "" : ` · safe point ${event.safe_point_timestep}`}`));
+    }
   }
 
   private async train(args: string[]): Promise<void> {
@@ -127,10 +140,12 @@ export class InteractiveSession {
       const response = await this.api.listCheckpoints();
       if (response.checkpoints.length === 0) { this.write(pc.yellow("  no checkpoints found")); return; }
       for (const [index, checkpoint] of response.checkpoints.entries()) this.write(`  ${index + 1}. ${checkpoint.checkpoint_id} · ${checkpoint.timesteps.toLocaleString()} steps · ${checkpoint.env_id}`);
-      this.write(pc.dim("  usage  /rollback <checkpoint-id>"));
+      this.write(pc.dim("  usage  /rollback <checkpoint-id|steering-event-id>"));
       return;
     }
-    const response = await this.api.rollback({ checkpoint_id: checkpointId });
+    const queue = await this.api.listSteeringQueue();
+    const isEvent = queue.items.some((event) => event.request_id === checkpointId);
+    const response = await this.api.rollback(isEvent ? { event_id: checkpointId } : { checkpoint_id: checkpointId });
     this.write(response.success ? pc.green(`  rollback complete · ${response.message}`) : pc.red(`  rollback failed · ${response.message}`));
   }
 
@@ -165,18 +180,65 @@ export class InteractiveSession {
     this.write(pc.green(`  model selected  ${selected}`));
   }
 
+  private async skills(args: string[]): Promise<void> {
+    const skills = await loadSkills();
+    if (args[0] !== "apply") {
+      this.write("  skills");
+      for (const skill of skills) this.write(`  ${skill.name} · ${skill.description}`);
+      this.write(pc.dim("  usage  /skills apply <name>"));
+      return;
+    }
+    const skill = skills.find((candidate) => candidate.name === args[1]);
+    if (!skill) throw new Error(`skill not found: ${args[1] || ""}`);
+    this.write(pc.green(`  ${await applySkill(skill, this.api)}`));
+  }
+
+  private async dashboard(args: string[]): Promise<void> {
+    const portFlag = args.indexOf("--port");
+    const port = portFlag >= 0 ? Number(args[portFlag + 1]) : 4173;
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("dashboard port must be between 1 and 65535");
+    this.write(pc.dim(`  dashboard  starting on port ${port}`));
+    this.write(pc.green(`  dashboard  ${await launchDashboard(this.options.host, this.options.token, port)}`));
+  }
+
+  private async edit(request: string): Promise<void> {
+    if (!request) { this.write(pc.yellow("  usage  /edit <file change request>")); return; }
+    this.write(pc.dim(`  agent  editing project files`));
+    const executor = new OllamaAgentExecutor(this.ollamaBaseUrl, this.agentModel);
+    const runtime = new AgentRuntime(createAgentTools(process.cwd(), this.api), (input, tools) => executor.execute(input, tools));
+    const result = await runtime.run(request);
+    for (const diff of result.diffs || []) this.showDiff(diff);
+    this.write(result.message);
+  }
+
   private async help(): Promise<void> {
-    this.write(pc.dim("  /train [--env CartPole-v1 --algo PPO --steps 50000] /model [name|number] /status /pause /resume /stop /checkpoint /logs /rollback [id] /steer /approve /dashboard /clear /exit"));
+    this.write(pc.dim("  /train [--env CartPole-v1 --algo PPO --steps 50000] /model [name|number] /edit <request> /skills [apply name] /mcp /status /pause /resume /stop /checkpoint /logs /rollback [id] /steer /approve /dashboard [--port 4173] /clear /exit"));
   }
 
   private onStatus(status: StatusMessage): void {
     if (status.state === "failed") this.write(pc.red(`  trainer failed  ${status.error || "unknown error"}`));
-    if (["completed", "stopped"].includes(status.state)) this.write(pc.green(`  run ${status.state}`));
+    const terminalKey = `${status.run_id || "local"}:${status.state}`;
+    if (["completed", "stopped"].includes(status.state) && terminalKey !== this.lastTerminalRunState) {
+      this.lastTerminalRunState = terminalKey;
+      this.write(pc.green(`  run ${status.state}`));
+    }
   }
 
-  private onTelemetry(event: TelemetryEvent): void {
-    const progress = (event.progress * 100).toFixed(1);
-    this.write(pc.dim(`  telemetry  ${progress}% · ${event.episode_count} episodes · ${event.fps} fps${event.episode_reward == null ? "" : ` · reward ${event.episode_reward.toFixed(1)}`}`));
+  private onTrainerMessage(message: { type: string; request_id?: string; message?: string; checkpoint_id?: string; diff?: string }): void {
+    if (message.type === "steering_window_open") this.write(pc.yellow(`  steering window open · request ${message.request_id}`));
+    if (message.type === "steering_pending") {
+      this.write(pc.yellow(`  steering pending approval · request ${message.request_id}`));
+      this.showDiff(message.diff);
+    }
+    if (message.type === "steering_applied") {
+      this.write(pc.green(`  steering applied · request ${message.request_id} · checkpoint ${message.checkpoint_id}`));
+      this.showDiff(message.diff);
+    }
+    if (message.type === "steering_failed") this.write(pc.red(`  steering failed · ${message.message || "validation failed"}`));
+  }
+
+  private showDiff(diff?: string): void {
+    if (diff) this.write(`\n${diff}\n`);
   }
 
   private write(message: string): void { this.output.write(`${message}\n`); }
@@ -192,4 +254,8 @@ export class InteractiveSession {
 export function runConfigFromArgs(args: string[]): RunConfig {
   const value = (flag: string, fallback: string) => { const index = args.indexOf(flag); return index >= 0 ? args[index + 1] || fallback : fallback; };
   return { run_id: Math.random().toString(36).slice(2, 10), env_id: value("--env", "CartPole-v1"), algorithm: value("--algo", "PPO"), total_timesteps: Number(value("--steps", "50000")), hyperparameters: {} };
+}
+
+function looksLikeProjectEdit(input: string): boolean {
+  return /\b(edit|modify|patch|refactor)\b/i.test(input) && /(?:[\w/-]+\.(?:py|ts|tsx|js|json|md)|\bfile\b)/i.test(input);
 }

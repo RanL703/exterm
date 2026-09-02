@@ -15,7 +15,7 @@ class RewardValidation:
 
 _ALLOWED_NAMES = {
     "self", "obs", "action", "original_reward", "terminated", "truncated", "info", "np",
-    "abs", "bool", "float", "int", "len", "max", "min", "pow", "round", "sum",
+    "abs", "bool", "dict", "float", "int", "len", "list", "max", "min", "pow", "round", "set", "sum", "tuple",
 }
 _ALLOWED_CALLS = _ALLOWED_NAMES - {"self", "obs", "action", "original_reward", "terminated", "truncated", "info", "np"}
 

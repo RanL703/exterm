@@ -100,7 +100,8 @@ export interface SteerResponse {
 }
 
 export interface RollbackRequest {
-  checkpoint_id: string;
+  checkpoint_id?: string;
+  event_id?: string;
 }
 
 export interface RollbackResponse {

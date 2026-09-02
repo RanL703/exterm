@@ -13,11 +13,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .agent.graph import run_analysis, run_steering
+from .agent.session import run_session_turn
 from .agent.validation import validate_reward_edit
 from .engine.runner import TrainingRunner
 from .protocol.messages import (
     AgentActionLog,
     AgentLogResponse,
+    AgentSessionRequest,
+    AgentSessionResponse,
     AnalysisResponse,
     AutoSteerConfig,
     AutoSteerStatus,
@@ -314,9 +317,6 @@ async def steer(request: SteerRequest):
             raise HTTPException(status_code=429, detail="Rate limit exceeded: max LLM calls per minute reached")
         record_call(_llm_call_times)
 
-        # Create a checkpoint before steering
-        checkpoint = runner.save_checkpoint()
-
         # Read current reward code
         current_code = runner._read_reward_code()
 
@@ -332,6 +332,10 @@ async def steer(request: SteerRequest):
 
         new_code = result.get("new_code", current_code)
         diff = result.get("diff", "")
+        validation = validate_reward_edit(current_code, new_code)
+        if not validation.ok:
+            raise HTTPException(status_code=422, detail=f"Generated steering failed validation: {validation.error}")
+        checkpoint = runner.save_checkpoint()
         requires_confirmation = result.get("requires_confirmation", False)
         risk_level = result.get("risk_level", "low")
 
@@ -355,7 +359,7 @@ async def steer(request: SteerRequest):
             )
 
         # Apply the change
-        runner.apply_steering(new_code)
+        runner.apply_steering(new_code, checkpoint=False)
 
         log_agent_action(AgentActionLog(
             timestamp=time.time(),
@@ -523,6 +527,11 @@ async def get_agent_log(limit: int = 100):
     return AgentLogResponse(logs=logs, total=len(_agent_action_log))
 
 
+@app.post("/api/v1/agent/session", response_model=AgentSessionResponse, dependencies=[Depends(verify_token)])
+async def agent_session(request: AgentSessionRequest):
+    return await run_session_turn(request.session_id, request.input, request.model or "")
+
+
 @app.get("/api/v1/agent/auto-steer/status", response_model=AutoSteerStatus, dependencies=[Depends(verify_token)])
 async def get_auto_steer_status():
     """Get auto-steer configuration and status."""
@@ -545,11 +554,22 @@ async def update_auto_steer_config(config: AutoSteerConfig):
 
 @app.post("/api/v1/rollback", response_model=RollbackResponse, dependencies=[Depends(verify_token)])
 async def rollback(request: RollbackRequest):
+    checkpoint_id = request.checkpoint_id
+    if request.event_id:
+        event = next((item for item in runner.get_steering_queue() if item.request_id == request.event_id), None)
+        if event is None or not event.checkpoint_id:
+            raise HTTPException(status_code=404, detail=f"Steering event {request.event_id} has no rollback checkpoint")
+        checkpoint_id = event.checkpoint_id
+    if not checkpoint_id:
+        raise HTTPException(status_code=400, detail="checkpoint_id or event_id is required")
     try:
-        runner.load_checkpoint(request.checkpoint_id)
+        runner.load_checkpoint(checkpoint_id)
+        if request.event_id:
+            runner.update_steering_item(request.event_id, state="rolled_back", message=f"Rolled back to checkpoint {checkpoint_id}")
+            runner._broadcast({"type": "steering_rolled_back", "request_id": request.event_id, "checkpoint_id": checkpoint_id})
         return RollbackResponse(
             success=True,
-            message=f"Rolled back to checkpoint {request.checkpoint_id}",
+            message=f"Rolled back to checkpoint {checkpoint_id}",
         )
     except (ValueError, FileNotFoundError) as e:
         raise HTTPException(status_code=404, detail=str(e))
