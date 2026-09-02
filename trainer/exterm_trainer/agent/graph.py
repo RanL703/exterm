@@ -30,6 +30,7 @@ class AgentState(TypedDict):
     hyperparam_suggestions: List[HyperparamSuggestion]
     new_code: Optional[str]
     diff: Optional[str]
+    rationale: Optional[str]
     requires_confirmation: bool
     risk_level: str
     error: Optional[str]
@@ -183,7 +184,8 @@ Rules:
 2. No imports, class changes, method signature changes
 3. No observation_space, action_space, gym.make modifications
 4. Use numpy (np) for math
-5. Return valid Python code for the method body between markers.
+5. Return JSON only with keys `reward_fn`, `rationale`, `risk_tier`, and optional `hyperparameters`.
+6. Use `auto` for reward-only edits and `confirm` for observation/action shape, wrapper, import, or training-loop changes.
 
 Current reward_fn body:
 ```python
@@ -200,14 +202,16 @@ return original_reward
             HumanMessage(content=user_prompt)
         ])
         
-        new_reward_fn = extract_reward_fn_from_response(response.content)
+        structured = extract_steering_response(response.content)
+        new_reward_fn = structured["reward_fn"]
         new_code = replace_reward_fn_in_code(state["current_code"], new_reward_fn)
         diff = generate_diff(state["current_code"], new_code)
-        requires_confirmation = is_risky_change(state["current_code"], new_code)
+        requires_confirmation = structured["risk_tier"] == "confirm" or is_risky_change(state["current_code"], new_code)
         
         return {
             "new_code": new_code,
             "diff": diff,
+            "rationale": structured["rationale"],
             "requires_confirmation": requires_confirmation,
             "risk_level": "high" if requires_confirmation else "low",
             "error": None,
@@ -219,6 +223,7 @@ return original_reward
         return {
             "new_code": new_code,
             "diff": diff,
+            "rationale": "Fallback reward edit generated because the configured LLM response could not be parsed.",
             "requires_confirmation": is_risky_change(state["current_code"], new_code),
             "risk_level": "low",
             "error": str(e),
@@ -299,6 +304,34 @@ def extract_reward_fn_from_response(response: str) -> str:
     if code_blocks:
         return code_blocks[0].strip()
     return response.strip()
+
+
+def extract_steering_response(response: str) -> Dict[str, Any]:
+    """Parse constrained JSON while retaining compatibility with old code-block responses."""
+    candidate = response.strip()
+    if candidate.startswith("```"):
+        candidate = candidate.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    try:
+        payload = json.loads(candidate)
+        reward_fn = payload.get("reward_fn") or payload.get("code")
+        risk_tier = payload.get("risk_tier", "auto")
+        if not isinstance(reward_fn, str) or not reward_fn.strip():
+            raise ValueError("missing reward_fn")
+        if risk_tier not in {"auto", "confirm"}:
+            raise ValueError("risk_tier must be auto or confirm")
+        return {
+            "reward_fn": reward_fn.strip(),
+            "rationale": str(payload.get("rationale", "No rationale provided.")),
+            "risk_tier": risk_tier,
+            "hyperparameters": payload.get("hyperparameters", {}),
+        }
+    except (ValueError, json.JSONDecodeError):
+        return {
+            "reward_fn": extract_reward_fn_from_response(response),
+            "rationale": "Legacy code response; restricted to the reward function body.",
+            "risk_tier": "auto",
+            "hyperparameters": {},
+        }
 
 
 def replace_reward_fn_in_code(code: str, new_reward_fn: str) -> str:

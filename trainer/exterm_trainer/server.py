@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .agent.graph import run_analysis, run_steering
+from .agent.validation import validate_reward_edit
 from .engine.runner import TrainingRunner
 from .protocol.messages import (
     AgentActionLog,
@@ -162,24 +163,35 @@ async def process_steering_queue() -> None:
         request, safe_point_timestep = ready
         request_id = request.request_id
         try:
-            checkpoint = runner.save_checkpoint()
             current_code = runner._read_reward_code()
             env_id = runner.current_config.env_id if runner.current_config else "CartPole-v1"
             algorithm = runner.current_config.algorithm if runner.current_config else "PPO"
             result = await run_steering(current_code, request.instruction, env_id, algorithm)
             new_code = result.get("new_code", current_code)
             diff = result.get("diff", "")
-            requires_confirmation = result.get("requires_confirmation", False)
+            validation = validate_reward_edit(current_code, new_code)
+            if not validation.ok:
+                runner.update_steering_item(request_id, state="failed", message=validation.error)
+                runner._broadcast({"type": "validation_failed", "request_id": request_id, "message": validation.error})
+                runner._broadcast({"type": "steering_failed", "request_id": request_id, "safe_point_timestep": safe_point_timestep, "message": validation.error})
+                log_agent_action(AgentActionLog(timestamp=time.time(), action_type="steer", instruction=request.instruction, applied=False, requires_confirmation=False, checkpoint_id=None, diff=diff, metadata={"safe_point_timestep": safe_point_timestep, "validation_error": validation.error}))
+                runner.resume_after_steering()
+                runner._broadcast({"type": "status", **runner.get_status().model_dump()})
+                continue
+            checkpoint = runner.save_checkpoint()
+            requires_confirmation = result.get("requires_confirmation", False) or validation.risk_level == "confirm"
+            rationale = result.get("rationale") or "No rationale provided."
+            risk_level = "confirm" if requires_confirmation else "auto"
             if requires_confirmation:
-                _pending_steering_proposals[request_id] = {"request": request, "new_code": new_code, "diff": diff, "checkpoint_id": checkpoint.checkpoint_id, "safe_point_timestep": safe_point_timestep}
-                item = runner.update_steering_item(request_id, state="pending", checkpoint_id=checkpoint.checkpoint_id, diff=diff, message="Change requires confirmation")
-                runner._broadcast({"type": "steering_pending", "request_id": request_id, "checkpoint_id": checkpoint.checkpoint_id, "safe_point_timestep": safe_point_timestep, "diff": diff})
-                log_agent_action(AgentActionLog(timestamp=time.time(), action_type="steer", instruction=request.instruction, applied=False, requires_confirmation=True, checkpoint_id=checkpoint.checkpoint_id, diff=diff, metadata={"safe_point_timestep": safe_point_timestep}))
+                _pending_steering_proposals[request_id] = {"request": request, "new_code": new_code, "diff": diff, "rationale": rationale, "checkpoint_id": checkpoint.checkpoint_id, "safe_point_timestep": safe_point_timestep}
+                runner.update_steering_item(request_id, state="pending", checkpoint_id=checkpoint.checkpoint_id, diff=diff, rationale=rationale, risk_level=risk_level, message="Change requires confirmation")
+                runner._broadcast({"type": "steering_pending", "request_id": request_id, "checkpoint_id": checkpoint.checkpoint_id, "safe_point_timestep": safe_point_timestep, "diff": diff, "rationale": rationale, "risk_level": risk_level})
+                log_agent_action(AgentActionLog(timestamp=time.time(), action_type="steer", instruction=request.instruction, applied=False, requires_confirmation=True, checkpoint_id=checkpoint.checkpoint_id, diff=diff, metadata={"safe_point_timestep": safe_point_timestep, "rationale": rationale, "risk_level": risk_level}))
             else:
-                runner.apply_steering(new_code)
-                item = runner.update_steering_item(request_id, state="applied", checkpoint_id=checkpoint.checkpoint_id, diff=diff, message="Steering applied successfully")
-                runner._broadcast({"type": "steering_applied", "request_id": request_id, "checkpoint_id": checkpoint.checkpoint_id, "safe_point_timestep": safe_point_timestep, "diff": diff})
-                log_agent_action(AgentActionLog(timestamp=time.time(), action_type="steer", instruction=request.instruction, applied=True, requires_confirmation=False, checkpoint_id=checkpoint.checkpoint_id, diff=diff, metadata={"safe_point_timestep": safe_point_timestep}))
+                runner.apply_steering(new_code, checkpoint=False)
+                runner.update_steering_item(request_id, state="applied", checkpoint_id=checkpoint.checkpoint_id, diff=diff, rationale=rationale, risk_level=risk_level, message="Steering applied successfully")
+                runner._broadcast({"type": "steering_applied", "request_id": request_id, "checkpoint_id": checkpoint.checkpoint_id, "safe_point_timestep": safe_point_timestep, "diff": diff, "rationale": rationale, "risk_level": risk_level})
+                log_agent_action(AgentActionLog(timestamp=time.time(), action_type="steer", instruction=request.instruction, applied=True, requires_confirmation=False, checkpoint_id=checkpoint.checkpoint_id, diff=diff, metadata={"safe_point_timestep": safe_point_timestep, "rationale": rationale, "risk_level": risk_level}))
                 runner.resume_after_steering()
         except Exception as error:
             runner.update_steering_item(request_id, state="failed", message=str(error))
@@ -389,12 +401,12 @@ async def approve_queued_steer(request_id: str):
     if proposal is None:
         raise HTTPException(status_code=404, detail=f"Steering proposal {request_id} not found")
     try:
-        runner.apply_steering(proposal["new_code"])
-        runner.update_steering_item(request_id, state="applied", message="Steering confirmed and applied")
+        runner.apply_steering(proposal["new_code"], checkpoint=False)
+        runner.update_steering_item(request_id, state="applied", rationale=proposal.get("rationale"), risk_level="confirm", message="Steering confirmed and applied")
         runner.resume_after_steering()
-        runner._broadcast({"type": "steering_applied", "request_id": request_id, "checkpoint_id": proposal["checkpoint_id"], "safe_point_timestep": proposal["safe_point_timestep"], "diff": proposal["diff"]})
+        runner._broadcast({"type": "steering_applied", "request_id": request_id, "checkpoint_id": proposal["checkpoint_id"], "safe_point_timestep": proposal["safe_point_timestep"], "diff": proposal["diff"], "rationale": proposal.get("rationale"), "risk_level": "confirm"})
         runner._broadcast({"type": "status", **runner.get_status().model_dump()})
-        log_agent_action(AgentActionLog(timestamp=time.time(), action_type="steer", instruction=proposal["request"].instruction, applied=True, requires_confirmation=False, checkpoint_id=proposal["checkpoint_id"], diff=proposal["diff"], metadata={"safe_point_timestep": proposal["safe_point_timestep"], "confirmed": True}))
+        log_agent_action(AgentActionLog(timestamp=time.time(), action_type="steer", instruction=proposal["request"].instruction, applied=True, requires_confirmation=False, checkpoint_id=proposal["checkpoint_id"], diff=proposal["diff"], metadata={"safe_point_timestep": proposal["safe_point_timestep"], "confirmed": True, "rationale": proposal.get("rationale"), "risk_level": "confirm"}))
         return SteerResponse(diff=proposal["diff"], applied=True, requires_confirmation=False, checkpoint_id=proposal["checkpoint_id"], message="Steering confirmed and applied")
     except Exception as error:
         runner.resume_after_steering()
@@ -412,8 +424,11 @@ async def confirm_steer(request: SteerRequest):
         new_code = result.get("new_code", current_code)
         diff = result.get("diff", "")
         
-        runner.apply_steering(new_code)
+        validation = validate_reward_edit(current_code, new_code)
+        if not validation.ok:
+            raise ValueError(validation.error)
         checkpoint = runner.save_checkpoint()
+        runner.apply_steering(new_code, checkpoint=False)
         
         log_agent_action(AgentActionLog(
             timestamp=time.time(),

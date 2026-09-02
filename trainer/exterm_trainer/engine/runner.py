@@ -216,16 +216,18 @@ class TrainingRunner:
                 **self.get_status().model_dump()
             })
 
-    def apply_steering(self, new_reward_code: str, new_hyperparameters: Optional[Dict[str, Any]] = None) -> None:
+    def apply_steering(self, new_reward_code: str, new_hyperparameters: Optional[Dict[str, Any]] = None, checkpoint: bool = True) -> None:
         """Apply steering changes - update reward code and optionally hyperparameters."""
         if self._model is None:
             raise RuntimeError("No active model to steer")
 
         # Save checkpoint before applying changes
-        self.save_checkpoint()
+        if checkpoint:
+            self.save_checkpoint()
 
         # Update reward code
         self._write_reward_code(new_reward_code)
+        self._apply_live_reward_code(new_reward_code)
         self._current_reward_code = new_reward_code
 
         # Update hyperparameters if provided
@@ -249,9 +251,49 @@ class TrainingRunner:
     def _write_reward_code(self, code: str) -> None:
         """Write reward.py to the project directory."""
         try:
-            Path("reward.py").write_text(code)
+            path = Path("reward.py")
+            temporary = path.with_suffix(".py.tmp")
+            temporary.write_text(code)
+            temporary.replace(path)
         except Exception as e:
-            logger.error(f"Failed to write reward.py: {e}")
+            raise RuntimeError(f"Failed to write reward.py: {e}") from e
+
+    def _apply_live_reward_code(self, code: str) -> None:
+        """Reload the validated reward function in the active wrapper."""
+        if self._model is None:
+            return
+        import importlib.util
+        import types
+
+        spec = importlib.util.spec_from_file_location("exterm_live_reward", Path("reward.py"))
+        if spec is None or spec.loader is None:
+            raise RuntimeError("Could not load reward.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        reward_class = getattr(module, "RewardShapingWrapper", None)
+        if reward_class is None:
+            raise RuntimeError("reward.py does not define RewardShapingWrapper")
+
+        def find_wrapper(value: Any, seen: set[int]) -> Any:
+            if value is None or id(value) in seen:
+                return None
+            seen.add(id(value))
+            if value.__class__.__name__ == "RewardShapingWrapper":
+                return value
+            for attribute in ("env", "venv"):
+                found = find_wrapper(getattr(value, attribute, None), seen)
+                if found is not None:
+                    return found
+            for child in getattr(value, "envs", []) or []:
+                found = find_wrapper(child, seen)
+                if found is not None:
+                    return found
+            return None
+
+        wrapper = find_wrapper(self._model.get_env(), set())
+        if wrapper is None:
+            raise RuntimeError("active training environment is not using RewardShapingWrapper")
+        wrapper.reward_fn = types.MethodType(reward_class.reward_fn, wrapper)
 
     def save_checkpoint(self, checkpoint_id: Optional[str] = None) -> CheckpointInfo:
         """Save a checkpoint of the current model and reward code."""
@@ -364,8 +406,21 @@ class TrainingRunner:
                 **self.get_status().model_dump()
             })
 
-            # Create monitored Gymnasium environment with video recording
-            base_env = gym.make(config.env_id, render_mode="rgb_array")
+            # Load the project-owned reward wrapper so steering changes affect training.
+            import importlib.util
+            reward_path = Path("reward.py")
+            if reward_path.exists():
+                spec = importlib.util.spec_from_file_location("exterm_reward", reward_path)
+                if spec is None or spec.loader is None:
+                    raise RuntimeError("Could not load reward.py")
+                reward_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(reward_module)
+                try:
+                    base_env = reward_module.make_env(config.env_id, render_mode="rgb_array")
+                except TypeError:
+                    base_env = reward_module.make_env(config.env_id)
+            else:
+                base_env = gym.make(config.env_id, render_mode="rgb_array")
             self._env = Monitor(base_env)
 
             # Wrap with RecordVideo for episode replay

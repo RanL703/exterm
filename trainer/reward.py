@@ -32,30 +32,20 @@ class RewardShapingWrapper(Wrapper):
     ) -> float:
         # ----- Edit below this line -----
         # ----- Edit below this line -----
-        import numpy as np
+        action_penalty = 0.0
+        if hasattr(self, 'prev_action') and self.prev_action is not None:
+            if action != self.prev_action:
+                action_penalty = -0.1  # Penalty for switching actions too frequently
         
-        # Calculate velocity change (jerkiness indicator)
-        # Access previous cart velocity from info if available
-        prev_cart_vel = info.get('previous_cart_velocity', obs[1])
-        current_cart_vel = obs[1]
-        velocity_change = current_cart_vel - prev_cart_vel
-        
-        # Penalize large velocity changes (jerky movements)
-        # Use a threshold to detect significant acceleration changes
-        jerk_penalty = 0.0
-        if not terminated and not truncated:
-            # Calculate magnitude of velocity change
-            vel_diff = np.abs(velocity_change)
-            # Apply penalty for jerky movements (large velocity changes)
-            jerk_penalty = -np.clip(vel_diff * 5.0, 0, 10.0)
-        
-        return original_reward + jerk_penalty
+        self.prev_action = action
+        return original_reward + action_penalty
+        # --------------------------------
         # --------------------------------
         # --------------------------------
 
 
-def make_env(env_id: str = "CartPole-v1"):
+def make_env(env_id: str = "CartPole-v1", render_mode: str | None = None):
     """Create the wrapped environment. Called by the exterm trainer."""
-    env = gym.make(env_id)
+    env = gym.make(env_id, render_mode=render_mode)
     env = RewardShapingWrapper(env)
     return env

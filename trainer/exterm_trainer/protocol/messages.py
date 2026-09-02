@@ -97,6 +97,8 @@ class SteeringQueueItem(BaseModel):
     safe_point_timestep: Optional[int] = None
     checkpoint_id: Optional[str] = None
     diff: Optional[str] = None
+    rationale: Optional[str] = None
+    risk_level: Optional[Literal["auto", "confirm"]] = None
     message: Optional[str] = None
 
 
