@@ -57,16 +57,18 @@ node ./packages/cli/bin/exterm.js train --env CartPole-v1 --algo PPO --steps 500
 Run the trainer server explicitly on any machine:
 ```bash
 npm run dev:trainer
-# or
-cd trainer && uv run python -m exterm_trainer --host 0.0.0.0 --port 8765
+# Remote access: use a certificate trusted by the CLI/dashboard clients.
+cd trainer && uv run python -m exterm_trainer --host 0.0.0.0 --port 8765 --tls --cert /path/to/fullchain.pem --key /path/to/key.pem
+# Or start the same trainer through the CLI:
+node ./packages/cli/bin/exterm.js serve --host 0.0.0.0 --port 8765 --tls --cert /path/to/fullchain.pem --key /path/to/key.pem
 ```
 
 Connect your CLI to a remote/standalone trainer:
 ```bash
-EXTERM_TOKEN=<trainer-token> node ./packages/cli/bin/exterm.js train --host http://<trainer-ip>:8765
+EXTERM_TOKEN=<trainer-token> node ./packages/cli/bin/exterm.js train --host https://<trainer-ip>:8765
 ```
 
-The trainer prints a bearer token at startup. Set `EXTERM_TOKEN` for authenticated CLI and dashboard requests. For a fixed local token, pass `--token <token>` to the trainer command.
+The trainer prints a bearer token at startup. Set `EXTERM_TOKEN` for authenticated CLI and dashboard requests. For a fixed token, pass `--token <token>` to the trainer command. The CLI `serve` command supports `--tls`, `--cert`, and `--key`. TLS certificates generated automatically for development are self-signed; remote CLI and browser clients need a certificate trusted by the system, or a TLS-terminating reverse proxy in front of the trainer.
 
 ### Dashboard
 
@@ -112,7 +114,6 @@ Useful commands:
 /rollback <checkpoint> # restore code and weights
 /skills                # list built-in/project presets
 /dashboard             # launch or reuse the dashboard
-/mcp                   # report interactive MCP status
 /help
 /exit
 ```

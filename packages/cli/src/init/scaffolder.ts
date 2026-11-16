@@ -93,9 +93,9 @@ export async function scaffoldProject(dir: string, config: ProjectConfig): Promi
     `        # --------------------------------`,
     ``,
     ``,
-    `def make_env(env_id: str = "${config.env.id}"):`,
+    `def make_env(env_id: str = "${config.env.id}", render_mode: str | None = None):`,
     `    """Create the wrapped environment. Called by the exterm trainer."""`,
-    `    env = gym.make(env_id)`,
+    `    env = gym.make(env_id, render_mode=render_mode)`,
     `    env = RewardShapingWrapper(env)`,
     `    return env`,
   ].join("\n");

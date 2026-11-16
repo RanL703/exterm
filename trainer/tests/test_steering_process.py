@@ -63,7 +63,7 @@ class OllamaFixture(BaseHTTPRequestHandler):
 
 
 def post_json(url: str, payload: dict) -> dict:
-    request = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+    request = Request(url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json", "Authorization": "Bearer integration-token"})
     with urlopen(request, timeout=10) as response:
         return json.load(response)
 
@@ -135,7 +135,12 @@ async def _exercise_training(process: subprocess.Popen, trainer_port: int, instr
         events = []
         applied = False
         for _ in range(300):
-            message = json.loads(await asyncio.wait_for(websocket.recv(), timeout=1))
+            try:
+                message = json.loads(await asyncio.wait_for(websocket.recv(), timeout=1))
+            except asyncio.TimeoutError:
+                if process.poll() is not None:
+                    raise AssertionError("trainer stopped before applying steering")
+                continue
             events.append(message)
             if message.get("type") == "steering_pending":
                 await asyncio.to_thread(post_json, f"http://127.0.0.1:{trainer_port}/api/v1/steer/queue/{message['request_id']}/approve", {})

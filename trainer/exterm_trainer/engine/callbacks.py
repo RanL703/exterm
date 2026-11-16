@@ -128,4 +128,4 @@ class StreamingCallback(BaseCallback):
         if self.safe_point_fn is not None:
             self.safe_point_fn(current_step)
 
-        return True
+        return current_step < self.total_timesteps

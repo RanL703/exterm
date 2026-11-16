@@ -22,11 +22,11 @@ Hobbyists and prototypers exploring RL ideas casually — not production ML team
 - Steer a training run mid-flight using natural language, with full transparency and reversibility
 - Visualize a training run (local or remote) via an on-demand web dashboard
 - Support running training on the same machine or offloaded to a remote/on-prem host
+- Expose trainer and project operations to external coding agents through the bundled MCP server
 
 **Non-goals (v1 — explicitly roadmap)**
 - Generating novel custom environments from scratch (v1 only selects/configures from existing registries)
 - Multi-agent / PettingZoo support
-- MCP-addressable trainer (other agents/tools calling into exterm as a tool)
 - Real auth / multi-user / org accounts
 - Experiment comparison or tracking suite (W&B-style)
 - Distributed / multi-GPU training
@@ -39,9 +39,9 @@ exterm is client-server from day one, with three clients talking to one trainer:
 - **exterm trainer** — the actual training loop (env + algo), runs locally by default or on a remote/on-prem host via `--host`. Exposes an HTTP+WS API.
 - **exterm dashboard** — web UI, attaches to a running trainer (local or remote) as another client of the same API.
 
-**Protocol**: bespoke lightweight HTTP + WebSocket, JSON payloads. WS streams live telemetry (reward curves, episode events, steering log) and accepts commands (steer, pause, checkpoint, rollback). HTTP handles one-off calls (list checkpoints, fetch a replay). MCP wrapper considered for v2+ once core is stable.
+**Protocol**: bespoke lightweight HTTP + WebSocket, JSON payloads. WS streams live telemetry (reward curves, episode events, steering log) and accepts commands (steer, pause, checkpoint, rollback). HTTP handles one-off calls (list checkpoints, fetch a replay). The bundled MCP server exposes trainer and project operations to external coding agents in v1.
 
-**Security (v1)**: local mode binds to `127.0.0.1`, no auth. Remote mode uses TLS (WSS/HTTPS) plus a per-session bearer token generated at trainer start — no accounts, no org/user system. This is "trusted network" security, sufficient for testing offload, not a production security model.
+**Security (v1)**: local mode binds to `127.0.0.1` and uses a bearer token generated at trainer start. Remote mode requires TLS (WSS/HTTPS) with a certificate trusted by clients, plus a per-session bearer token generated at trainer start — no accounts, no org/user system. This is "trusted network" security, sufficient for testing offload, not a production security model.
 
 ## 6. Core features
 
@@ -111,10 +111,10 @@ No multi-run comparison or experiment tracking in v1.
 
 - **Code-editing steering is the highest-risk feature.** LLM-authored reward/wrapper edits could silently degrade training if buggy. Mitigated by mandatory diff+checkpoint+rollback and confirmation gating on high-risk edit classes (5.4) — this is a required architectural component, not optional polish.
 - **"Almost every basic RL model"** is bounded in v1 to what SB3 (or equivalent) supports well; broader algorithm coverage is a scope risk if not held to this line.
-- **No auth in remote mode** means offload is only safe on trusted networks for v1 — must be communicated clearly in docs/CLI output, not just assumed understood.
+- **No accounts or organization-level access controls** means offload is only safe on trusted networks for v1 — this must be communicated clearly in docs/CLI output, not just assumed understood.
 
 ## 9. v1 cut line
 
 **In scope**: `exterm init`, `exterm train` (local + `--host`), NL runtime steering with diff/checkpoint/rollback, `exterm dashboard` (4 panels, local + remote), PPO/DQN/SAC/DDPG/TD3/A2C via SB3, Gymnasium classic control + Atari + MuJoCo, TLS + bearer token for remote mode.
 
-**Out of scope (roadmap)**: novel custom environment generation, multi-agent/PettingZoo, MCP-addressable trainer, real auth/multi-user, experiment comparison/tracking, distributed/multi-GPU training.
+**Out of scope (roadmap)**: novel custom environment generation, multi-agent/PettingZoo, real auth/multi-user, experiment comparison/tracking, distributed/multi-GPU training.

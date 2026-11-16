@@ -53,3 +53,18 @@ def test_rollback_restores_code_and_model_from_pre_edit_checkpoint(tmp_path, mon
     runner.load_checkpoint(checkpoint.checkpoint_id)
     assert Path("reward.py").read_text() == BASE
     assert runner._model.value == "base"
+
+
+def test_checkpoint_restore_works_without_project_reward_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    runner = TrainingRunner()
+    runner.current_config = RunConfig(run_id="no-reward-file", total_timesteps=10)
+    runner._env = VecEnv(RewardShapingWrapper())
+    runner._model = FakeModel(runner._env)
+
+    checkpoint = runner.save_checkpoint("no-reward-code")
+    runner._model.value = "changed"
+    runner.load_checkpoint(checkpoint.checkpoint_id)
+
+    assert runner._model.value == "base"
+    assert not Path("reward.py").exists()

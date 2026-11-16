@@ -45,6 +45,7 @@ class TrainingRunner:
         self.state: RunState = RunState.IDLE
         self.current_config: Optional[RunConfig] = None
         self.latest_telemetry: Optional[TelemetryEvent] = None
+        self._current_timestep = 0
         self.error: Optional[str] = None
 
         self._stop_event = threading.Event()
@@ -100,6 +101,7 @@ class TrainingRunner:
         return QueueSteerResponse(request_id=request.request_id, state="queued", queue_position=position, message="Steering request queued")
 
     def process_safe_point(self, timestep: int) -> None:
+        self._current_timestep = timestep
         with self._steering_lock:
             if not self._steering_pending:
                 return
@@ -141,10 +143,11 @@ class TrainingRunner:
 
     def _emit_telemetry(self, event: TelemetryEvent) -> None:
         self.latest_telemetry = event
+        self._current_timestep = event.timesteps
         self._broadcast(event.model_dump())
 
     def get_status(self) -> StatusResponse:
-        timesteps = self.latest_telemetry.timesteps if self.latest_telemetry else 0
+        timesteps = self._current_timestep
         total_timesteps = (
             self.latest_telemetry.total_timesteps
             if self.latest_telemetry
@@ -170,12 +173,15 @@ class TrainingRunner:
         )
 
     def start(self, config: RunConfig) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            raise RuntimeError("Cannot start a new run while the previous training thread is still stopping")
         if self.state in (RunState.TRAINING, RunState.STARTING, RunState.PAUSED):
             raise RuntimeError(f"Cannot start training while in state {self.state}")
 
         self.state = RunState.STARTING
         self.current_config = config
         self.latest_telemetry = None
+        self._current_timestep = 0
         self.error = None
         self._stop_event.clear()
         self._pause_event.clear()
@@ -355,14 +361,16 @@ class TrainingRunner:
 
         # Publish the restored model only after source restoration succeeds.
         restored_model = self._model.__class__.load(str(model_path), env=self._env)
-        previous_code = self._read_reward_code()
-        try:
-            self._write_reward_code(checkpoint.reward_code)
-        except Exception:
-            self._write_reward_code(previous_code)
-            raise
+        if checkpoint.reward_code:
+            previous_code = self._read_reward_code()
+            try:
+                self._write_reward_code(checkpoint.reward_code)
+            except Exception:
+                self._write_reward_code(previous_code)
+                raise
         self._model = restored_model
-        self._apply_live_reward_code(checkpoint.reward_code)
+        if checkpoint.reward_code:
+            self._apply_live_reward_code(checkpoint.reward_code)
         self._current_reward_code = checkpoint.reward_code
 
         logger.info(f"Loaded checkpoint {checkpoint_id}")
@@ -410,11 +418,6 @@ class TrainingRunner:
         self._env = None
         try:
             logger.info(f"Starting training run {config.run_id}: env={config.env_id}, algo={config.algorithm}, steps={config.total_timesteps}")
-            self.state = RunState.TRAINING
-            self._broadcast({
-                "type": "status",
-                **self.get_status().model_dump()
-            })
 
             # Load the project-owned reward wrapper so steering changes affect training.
             import importlib.util
@@ -425,24 +428,28 @@ class TrainingRunner:
                     raise RuntimeError("Could not load reward.py")
                 reward_module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(reward_module)
+                record_video = True
                 try:
                     base_env = reward_module.make_env(config.env_id, render_mode="rgb_array")
                 except TypeError:
                     base_env = reward_module.make_env(config.env_id)
+                    record_video = False
             else:
                 base_env = gym.make(config.env_id, render_mode="rgb_array")
+                record_video = True
             self._env = Monitor(base_env)
 
             # Wrap with RecordVideo for episode replay
             # Record every episode (episode_trigger=lambda x: True)
-            video_dir = self._videos_dir / config.run_id
-            video_dir.mkdir(exist_ok=True)
-            self._env = RecordVideo(
-                self._env,
-                video_folder=str(video_dir),
-                episode_trigger=lambda x: True,
-                name_prefix=f"episode",
-            )
+            if record_video:
+                video_dir = self._videos_dir / config.run_id
+                video_dir.mkdir(exist_ok=True)
+                self._env = RecordVideo(
+                    self._env,
+                    video_folder=str(video_dir),
+                    episode_trigger=lambda x: True,
+                    name_prefix=f"episode",
+                )
 
             algo_cls = ALGO_MAP.get(config.algorithm.upper(), PPO)
             policy = "MlpPolicy"
@@ -452,6 +459,13 @@ class TrainingRunner:
                 algo_kwargs["seed"] = config.seed
 
             self._model = algo_cls(policy, self._env, verbose=0, **algo_kwargs)
+
+            if not self._stop_event.is_set():
+                self.state = RunState.TRAINING
+            self._broadcast({
+                "type": "status",
+                **self.get_status().model_dump()
+            })
 
             # Read initial reward code
             self._current_reward_code = self._read_reward_code()

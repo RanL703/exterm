@@ -81,6 +81,7 @@ export async function trainCommand(options: TrainOptions): Promise<void> {
     let hasStarted = false;
     let finalStatus: StatusMessage | null = null;
     let trainingActive = false;
+    let runFailed = false;
 
     wsClient.onTelemetry((event) => {
       if (event.run_id === runId) {
@@ -102,6 +103,7 @@ export async function trainCommand(options: TrainOptions): Promise<void> {
         } else if (status.state === "failed") {
           isDone = true;
           trainingActive = false;
+          runFailed = true;
           renderer.fail(status.error || "Unknown trainer failure");
         }
       }
@@ -254,7 +256,7 @@ export async function trainCommand(options: TrainOptions): Promise<void> {
     renderer.finish(finalStatus);
     wsClient.close();
     process.removeListener("SIGINT", sigintHandler);
-    process.exit(0);
+    process.exit(runFailed ? 1 : 0);
   } catch (err: any) {
     process.stdout.write("\x1b[?25h");
     console.error(pc.red(`\n  ? Error: ${err.message || err}\n`));

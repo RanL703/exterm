@@ -1,10 +1,26 @@
 import readline from "node:readline";
 import { AgentTool } from "../agent/tools.js";
 
-export interface McpToolDefinition { name: string; description: string; inputSchema: { type: "object"; properties: Record<string, unknown>; additionalProperties?: boolean }; }
+export interface McpToolDefinition { name: string; description: string; inputSchema: { type: "object"; properties: Record<string, unknown>; required?: string[]; additionalProperties?: boolean }; }
+
+function inputSchema(name: string): McpToolDefinition["inputSchema"] {
+  const string = { type: "string" };
+  const schemas: Record<string, McpToolDefinition["inputSchema"]> = {
+    project_list_files: { type: "object", properties: {} },
+    project_read_file: { type: "object", properties: { path: string }, required: ["path"] },
+    project_apply_patch: { type: "object", properties: { patch: string }, required: ["patch"] },
+    project_validate: { type: "object", properties: { command: string, args: { type: "array", items: string } }, required: ["command"] },
+    trainer_status: { type: "object", properties: {} },
+    trainer_start: { type: "object", properties: { run_id: string, env_id: string, algorithm: string, total_timesteps: { type: "integer" }, seed: { type: "integer" }, hyperparameters: { type: "object" } }, required: ["run_id", "env_id", "algorithm", "total_timesteps"] },
+    trainer_control: { type: "object", properties: { action: { type: "string", enum: ["pause", "resume", "stop", "checkpoint", "restore"] }, checkpointId: string }, required: ["action"] },
+    trainer_queue_steer: { type: "object", properties: { instruction: string }, required: ["instruction"] },
+    trainer_artifacts: { type: "object", properties: {} },
+  };
+  return schemas[name] ?? { type: "object", properties: {} };
+}
 
 export function createMcpServer(tools: AgentTool[], projectRoot: string) {
-  const definitions: McpToolDefinition[] = tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: { type: "object", properties: {}, additionalProperties: true } }));
+  const definitions: McpToolDefinition[] = tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: inputSchema(tool.name) }));
   return {
     listTools: () => definitions,
     async callTool(name: string, input: unknown) {

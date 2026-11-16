@@ -51,7 +51,6 @@ export class InteractiveSession {
       approve: async (args) => this.approve(args[0]),
       model: async (args) => this.model(args),
       skills: async (args) => this.skills(args),
-      mcp: async () => this.write(pc.yellow("  MCP is not available as an interactive session tool yet; use `exterm mcp` for the bundled stdio server.")),
       dashboard: async (args) => this.dashboard(args),
       edit: async (args) => this.edit(args.join(" ")),
       clear: async () => this.write("\x1b[2J\x1b[H"),
@@ -66,7 +65,9 @@ export class InteractiveSession {
     this.ws.onMessage((message) => this.onTrainerMessage(message as { type: string; request_id?: string; message?: string; checkpoint_id?: string; diff?: string }));
     this.write(pc.bold(pc.cyan("\n  exterm")) + pc.dim(" · RL coding agent"));
     this.write(pc.dim(`  trainer  ${this.options.host}`));
-    this.write(pc.dim("  Type /help for commands. Describe a change in plain language."));
+    const status = await this.api.getStatus();
+    this.write(`  ${pc.bold(status.state)} · ${status.timesteps.toLocaleString()}/${status.total_timesteps.toLocaleString()} steps · ${status.episodes.toLocaleString()} episodes · ${status.fps} fps`);
+    this.write(pc.dim("  Try /train, /status, /steer <instruction>, /help, or describe a change."));
 
     this.rl = readline.createInterface({ input: this.input, output: this.output, terminal: true, prompt: pc.cyan("exterm> ") });
     this.rl.on("line", (line) => {
@@ -212,7 +213,11 @@ export class InteractiveSession {
   }
 
   private async help(): Promise<void> {
-    this.write(pc.dim("  /train [--env CartPole-v1 --algo PPO --steps 50000] /model [name|number] /edit <request> /skills [apply name] /mcp /status /pause /resume /stop /checkpoint /logs /rollback [id] /steer /approve /dashboard [--port 4173] /clear /exit"));
+    this.write("  Training   /train [--env CartPole-v1 --algo PPO --steps 50000]  /pause  /resume  /stop");
+    this.write("  Steering   /steer <instruction>  /approve <request-id>  /rollback [checkpoint-id]");
+    this.write("  Project    /edit <request>  /skills [apply name]  /model [name|number]");
+    this.write("  Inspect    /status  /logs  /checkpoint  /dashboard [--port 4173]");
+    this.write(pc.dim("  Other      /clear  /help  /exit · MCP clients can launch `exterm mcp`. Plain language works for agent requests."));
   }
 
   private onStatus(status: StatusMessage): void {

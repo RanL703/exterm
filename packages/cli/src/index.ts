@@ -63,8 +63,11 @@ program
 program
   .command("serve")
   .description("Run the exterm trainer server process")
-  .option("-h, --host <host>", "Host address to bind", "127.0.0.1")
+  .option("-H, --host <host>", "Host address to bind", "127.0.0.1")
   .option("-p, --port <port>", "Port to bind", "8765")
+  .option("--tls", "Enable HTTPS/WSS (remote use requires a trusted certificate)")
+  .option("--cert <path>", "TLS certificate path")
+  .option("--key <path>", "TLS private key path")
   .action(serveCommand);
 
 program

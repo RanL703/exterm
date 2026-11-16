@@ -11,6 +11,8 @@
     "dev:trainer": "uv run --directory trainer python -m exterm_trainer"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "playwright": "^1.62.1",
     "typescript": "^5.4.5"
   }
 }

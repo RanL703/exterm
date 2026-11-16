@@ -9,6 +9,15 @@ test("MCP exposes trainer_status and does not expose shell", () => {
   assert.equal(server.listTools().some((tool) => tool.name === "shell"), false);
 });
 
+test("MCP publishes input schemas for tools that require arguments", () => {
+  const tools = createMcpServer([
+    { name: "project_read_file", description: "read", execute: async () => "" },
+    { name: "trainer_queue_steer", description: "steer", execute: async () => ({}) },
+  ], process.cwd()).listTools();
+  assert.deepEqual(tools[0].inputSchema.required, ["path"]);
+  assert.deepEqual(tools[1].inputSchema.required, ["instruction"]);
+});
+
 test("MCP stdio responds to initialize and tools/list", async () => {
   const server = createMcpServer([], process.cwd());
   const output: string[] = [];

@@ -1,9 +1,12 @@
 import httpx
 import pytest
 import pytest_asyncio
+from fastapi import HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
 
 from exterm_trainer.protocol.messages import RunConfig, RunState
 from exterm_trainer.server import app, get_status, runner
+import exterm_trainer.server as server_module
 
 
 @pytest_asyncio.fixture
@@ -26,6 +29,20 @@ async def test_health(client):
 async def test_status_idle(client):
     response = await get_status()
     assert response.state in list(RunState)
+
+
+def test_bearer_token_rejects_missing_or_invalid_credentials(monkeypatch):
+    monkeypatch.setattr(server_module, "BEARER_TOKEN", "integration-token")
+
+    with pytest.raises(HTTPException) as missing:
+        server_module.verify_token(None)
+    assert missing.value.status_code == 401
+
+    with pytest.raises(HTTPException) as invalid:
+        server_module.verify_token(HTTPAuthorizationCredentials(scheme="Bearer", credentials="wrong-token"))
+    assert invalid.value.status_code == 401
+
+    server_module.verify_token(HTTPAuthorizationCredentials(scheme="Bearer", credentials="integration-token"))
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Terminal-native CLI to scaffold, train, and steer reinforcement learning agents",
   "type": "module",
+  "files": [
+    "bin/",
+    "dist/"
+  ],
   "bin": {
     "exterm": "./bin/exterm.js"
   },
